@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' blob:; connect-src 'self' https://nxwzaztltnqdslnvehva.supabase.co https://api.groq.com http://localhost:11434 https:; font-src 'self' data:"
     }
   },
   "bundle": {

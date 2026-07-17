@@ -6,7 +6,7 @@ import {
   ChevronDown,
   Download,
   ExternalLink,
-  HardDrive,
+  Box,
   Settings,
   Zap,
   Palette,
@@ -34,6 +34,7 @@ import {
   type LocalModelDef,
 } from "../lib/ollama";
 import { Avatar } from "./Sidebar";
+import { useConfirmDialog } from "./ConfirmDialog";
 
 type Section =
   | "general"
@@ -41,7 +42,7 @@ type Section =
   | "models"
   | "agents"
   | "appearance"
-  | "account"
+  | "profile"
   | "shortcuts"
   | "data";
 
@@ -51,7 +52,7 @@ const SECTION_GROUPS: { label: string; items: { id: Section; label: string; icon
     items: [
       { id: "general", label: "General", icon: Settings },
       { id: "providers", label: "Providers", icon: Plug },
-      { id: "models", label: "Models", icon: HardDrive },
+      { id: "models", label: "Models", icon: Box },
       { id: "agents", label: "Agents", icon: Users },
     ],
   },
@@ -65,7 +66,7 @@ const SECTION_GROUPS: { label: string; items: { id: Section; label: string; icon
   {
     label: "Account",
     items: [
-      { id: "account", label: "Account", icon: User },
+      { id: "profile", label: "Profile", icon: User },
       { id: "data", label: "Data", icon: Database },
     ],
   },
@@ -231,6 +232,7 @@ export function SettingsPage({
   onClearConversations: () => void;
   onExportData: () => void;
 }) {
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [section, setSection] = useState<Section>("general");
   const [newProvider, setNewProvider] = useState({ name: "", baseUrl: "", model: "", apiKey: "" });
   const [showApiKey, setShowApiKey] = useState(false);
@@ -319,7 +321,7 @@ export function SettingsPage({
     }
   }
 
-  function useLocalModel(m: LocalModelDef) {
+  function selectLocalModel(m: LocalModelDef) {
     const existing = findLocalProvider(m);
     if (existing) {
       onChange({ model: customModelId(existing.id) });
@@ -336,7 +338,13 @@ export function SettingsPage({
   }
 
   async function removeLocalModel(m: LocalModelDef) {
-    if (!window.confirm(`Delete "${m.name}" from disk? This can't be undone.`)) return;
+    const ok = await confirm({
+      title: `Delete "${m.name}" from disk?`,
+      description: "This can't be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteOllamaModel(m.id);
       setInstalledLocalModels((prev) => (prev ?? []).filter((n) => n !== m.id));
@@ -607,10 +615,14 @@ export function SettingsPage({
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (window.confirm(`Remove provider "${p.name}"? This can't be undone.`)) {
-                              removeProvider(p.id);
-                            }
+                          onClick={async () => {
+                            const ok = await confirm({
+                              title: `Remove provider "${p.name}"?`,
+                              description: "This can't be undone.",
+                              confirmLabel: "Remove",
+                              danger: true,
+                            });
+                            if (ok) removeProvider(p.id);
                           }}
                           title="Remove provider"
                           className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
@@ -726,7 +738,7 @@ export function SettingsPage({
 
               {ollamaUnreachable && (
                 <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6">
-                  <HardDrive className="w-5 h-5 text-foreground-muted mb-2" />
+                  <Box className="w-5 h-5 text-foreground-muted mb-2" />
                   <div className="text-[13px] text-foreground-secondary">Can't reach Ollama</div>
                   <div className="text-[12px] text-foreground-muted mt-0.5 max-w-xs">
                     Install Ollama and make sure it's running, then reopen this tab.
@@ -765,7 +777,7 @@ export function SettingsPage({
                             {!active && (
                               <button
                                 type="button"
-                                onClick={() => useLocalModel(m)}
+                                onClick={() => selectLocalModel(m)}
                                 className="h-7 px-2.5 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition-opacity"
                               >
                                 Use
@@ -857,10 +869,14 @@ export function SettingsPage({
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (window.confirm(`Remove agent "${a.name}"? This can't be undone.`)) {
-                              removeAgent(a.id);
-                            }
+                          onClick={async () => {
+                            const ok = await confirm({
+                              title: `Remove agent "${a.name}"?`,
+                              description: "This can't be undone.",
+                              confirmLabel: "Remove",
+                              danger: true,
+                            });
+                            if (ok) removeAgent(a.id);
                           }}
                           title="Remove agent"
                           className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
@@ -998,7 +1014,7 @@ export function SettingsPage({
             </div>
           )}
 
-          {section === "account" && (
+          {section === "profile" && (
             <div>
               <h1 className="text-[18px] font-medium mb-6">Account</h1>
               {userEmail ? (
@@ -1142,8 +1158,13 @@ export function SettingsPage({
               >
                 <button
                   type="button"
-                  onClick={() => {
-                    if (window.confirm("Reset all settings to their defaults? Conversations are not affected.")) {
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Reset all settings to their defaults?",
+                      description: "Conversations are not affected.",
+                      confirmLabel: "Reset",
+                    });
+                    if (ok) {
                       onChange({
                         ...DEFAULT_SETTINGS,
                         customProviders: settings.customProviders,
@@ -1164,10 +1185,14 @@ export function SettingsPage({
               >
                 <button
                   type="button"
-                  onClick={() => {
-                    if (window.confirm("Delete every conversation on this device? This can't be undone.")) {
-                      onClearConversations();
-                    }
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Delete every conversation on this device?",
+                      description: "This can't be undone.",
+                      confirmLabel: "Delete",
+                      danger: true,
+                    });
+                    if (ok) onClearConversations();
                   }}
                   className="h-8 px-3 rounded-lg border border-red-200 text-[13px] text-red-600 hover:bg-red-50 transition-colors shrink-0"
                 >
@@ -1178,6 +1203,7 @@ export function SettingsPage({
           )}
         </div>
       </main>
+      {confirmDialog}
     </div>
   );
 }

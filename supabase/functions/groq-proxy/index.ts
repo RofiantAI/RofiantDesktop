@@ -1,18 +1,28 @@
 // Proxies chat-completion requests to Groq using a server-side secret.
 // The real GROQ_API_KEY never leaves this function — callers only need a
 // valid Supabase user access token, checked below.
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, type User } from "https://esm.sh/@supabase/supabase-js@2";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-async function isAuthenticated(authHeader: string | null): Promise<boolean> {
-  if (!authHeader?.startsWith("Bearer ")) return false;
+// Mirrors src/lib/models.ts PRO_MODELS — kept in sync manually since the
+// frontend and this function live in separate build/deploy pipelines. The
+// frontend's plan gate (clampModelForPlan) is client-side only and can be
+// bypassed by calling this endpoint directly, so it must be re-checked here.
+const PRO_MODEL_IDS = new Set(["openai/gpt-oss-120b"]);
+
+const PER_MINUTE_LIMIT = 30;
+const PER_DAY_LIMIT = 1000;
+
+async function getUser(authHeader: string | null): Promise<User | null> {
+  if (!authHeader?.startsWith("Bearer ")) return null;
   const token = authHeader.slice("Bearer ".length);
   // auth.getUser verifies the token's signature against Supabase Auth —
   // decoding the payload alone (the old approach) lets anyone forge a token.
   const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!);
   const { data, error } = await supabase.auth.getUser(token);
-  return !error && !!data.user;
+  if (error || !data.user) return null;
+  return data.user;
 }
 
 Deno.serve(async (req) => {
@@ -20,11 +30,32 @@ Deno.serve(async (req) => {
     return new Response("Method not allowed", { status: 405 });
   }
 
-  if (!(await isAuthenticated(req.headers.get("Authorization")))) {
+  const user = await getUser(req.headers.get("Authorization"));
+  if (!user) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (serviceRoleKey) {
+    const admin = createClient(Deno.env.get("SUPABASE_URL")!, serviceRoleKey);
+    const { data: withinLimit, error: rateError } = await admin.rpc("check_rate_limit", {
+      p_user_id: user.id,
+      p_per_minute_limit: PER_MINUTE_LIMIT,
+      p_per_day_limit: PER_DAY_LIMIT,
+    });
+    if (rateError) {
+      console.error("groq-proxy: rate limit check failed", rateError);
+    } else if (!withinLimit) {
+      return new Response(JSON.stringify({ error: "rate limit exceeded" }), {
+        status: 429,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  } else {
+    console.error("groq-proxy: SUPABASE_SERVICE_ROLE_KEY not set, skipping rate limiting");
   }
 
   const groqKey = Deno.env.get("GROQ_API_KEY");
@@ -35,7 +66,25 @@ Deno.serve(async (req) => {
     });
   }
 
-  const body = await req.text();
+  const bodyText = await req.text();
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    return new Response(JSON.stringify({ error: "invalid JSON body" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const model = typeof body.model === "string" ? body.model : "";
+  const plan = ((user.user_metadata?.plan as string | undefined) ?? "free").toLowerCase();
+  if (plan === "free" && PRO_MODEL_IDS.has(model)) {
+    return new Response(JSON.stringify({ error: "model requires a pro plan" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   const groqResponse = await fetch(GROQ_URL, {
     method: "POST",
@@ -43,7 +92,7 @@ Deno.serve(async (req) => {
       "Content-Type": "application/json",
       Authorization: `Bearer ${groqKey}`,
     },
-    body,
+    body: bodyText,
   });
 
   return new Response(groqResponse.body, {

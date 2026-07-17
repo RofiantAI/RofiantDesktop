@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, FileText, History, Trash2 } from "lucide-react";
 import type { FileChange } from "../types";
 import { DiffView, fileName } from "./FileChangesPanel";
+import { useConfirmDialog } from "./ConfirmDialog";
 
 export function ChangeHistoryPage({
   changes,
@@ -12,6 +13,7 @@ export function ChangeHistoryPage({
   onClose: () => void;
   onClear: () => void;
 }) {
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [selectedId, setSelectedId] = useState<string | null>(changes.at(-1)?.id ?? null);
 
   useEffect(() => {
@@ -22,6 +24,7 @@ export function ChangeHistoryPage({
 
   return (
     <div className="flex h-full">
+      {confirmDialog}
       <div className="w-[320px] shrink-0 flex flex-col border-r border-border bg-background-secondary h-full">
         <div className="flex items-center gap-2 h-11 px-3 border-b border-border shrink-0">
           <button
@@ -39,11 +42,15 @@ export function ChangeHistoryPage({
           <div className="flex-1" />
           <button
             type="button"
-            onClick={() => {
+            onClick={async () => {
               if (changes.length === 0) return;
-              if (window.confirm("Clear the file change history for this agent? This can't be undone.")) {
-                onClear();
-              }
+              const ok = await confirm({
+                title: "Clear the file change history for this agent?",
+                description: "This can't be undone.",
+                confirmLabel: "Clear",
+                danger: true,
+              });
+              if (ok) onClear();
             }}
             title="Clear history"
             disabled={changes.length === 0}

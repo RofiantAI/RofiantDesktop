@@ -10,6 +10,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { AuthPage } from "./components/AuthPage";
 import { FileChangesPanel } from "./components/FileChangesPanel";
 import { ChangeHistoryPage } from "./components/ChangeHistoryPage";
+import { useConfirmDialog } from "./components/ConfirmDialog";
 import { TitleBar } from "./components/TitleBar";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { CommandPalette } from "./components/CommandPalette";
@@ -81,6 +82,7 @@ function makeConversation(title = "New chat"): Conversation {
 const initial = makeConversation("Welcome");
 
 function App() {
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [conversations, setConversations] = useState<Conversation[]>([initial]);
   const [openTabIds, setOpenTabIds] = useState<string[]>([initial.id]);
   const [activeId, setActiveId] = useState<string | null>(initial.id);
@@ -721,10 +723,14 @@ function App() {
       id: "clear-chats",
       label: "Clear all chats",
       icon: Trash2,
-      onRun: () => {
-        if (window.confirm("Delete every conversation on this device? This can't be undone.")) {
-          handleClearConversations();
-        }
+      onRun: async () => {
+        const ok = await confirm({
+          title: "Delete every conversation on this device?",
+          description: "This can't be undone.",
+          confirmLabel: "Delete",
+          danger: true,
+        });
+        if (ok) handleClearConversations();
       },
     },
     session
@@ -840,6 +846,7 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen box-border border border-border-light overflow-hidden bg-background text-foreground">
+      {confirmDialog}
       <ResizeHandles />
       <TitleBar sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen((v) => !v)} />
       <CommandPalette

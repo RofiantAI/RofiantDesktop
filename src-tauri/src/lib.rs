@@ -185,18 +185,44 @@ fn is_blocked_command(command: &str) -> Option<&'static str> {
         ("rm -rf ~", "recursive delete of the home directory"),
         ("rm -rf *", "recursive delete with an unbounded wildcard"),
         ("rm -fr /", "recursive delete of the root filesystem"),
+        ("rm -fr ~", "recursive delete of the home directory"),
+        ("rm -fr *", "recursive delete with an unbounded wildcard"),
         (":(){:|:&};:", "fork bomb"),
         ("mkfs", "formatting a disk/partition"),
         ("dd if=", "raw disk write via dd"),
         ("> /dev/sd", "overwriting a raw disk device"),
         ("> /dev/nvme", "overwriting a raw disk device"),
+        ("> /dev/disk", "overwriting a raw disk device"),
+        ("> /dev/hd", "overwriting a raw disk device"),
         ("chmod -r 777 /", "world-writable permissions on the root filesystem"),
         ("chmod -r 000 /", "removing all permissions on the root filesystem"),
+        ("chown -r", "recursive ownership change (can lock the user out of their own files)"),
         ("shutdown", "shutting down the machine"),
         ("reboot", "rebooting the machine"),
-        ("sudo rm", "privilege-escalated delete"),
-        ("sudo dd", "privilege-escalated raw disk write"),
+        ("halt", "halting the machine"),
+        ("sudo ", "privilege escalation (not permitted from the assistant)"),
+        ("doas ", "privilege escalation (not permitted from the assistant)"),
+        ("su -", "privilege escalation (not permitted from the assistant)"),
+        (">> ~/.ssh/authorized_keys", "modifying SSH authorized_keys"),
+        ("> ~/.ssh/authorized_keys", "overwriting SSH authorized_keys"),
+        ("history -c", "clearing shell history"),
+        (":>", "truncating a file via redirection shorthand"),
     ];
+
+    // curl/wget are only blocked outright when piped into a shell — plain
+    // downloads to a file are legitimate and handled by the generic patterns
+    // above only for the authorized_keys/history cases. Piping a remote
+    // script straight into an interpreter is the actual risk.
+    let pipes_to_shell = (normalized.contains("curl") || normalized.contains("wget"))
+        && (normalized.contains("| sh")
+            || normalized.contains("| bash")
+            || normalized.contains("|sh")
+            || normalized.contains("|bash")
+            || normalized.contains("| zsh")
+            || normalized.contains("| sudo"));
+    if pipes_to_shell {
+        return Some("downloading and piping a remote script directly into a shell");
+    }
 
     for (pattern, reason) in patterns {
         if normalized.contains(pattern) {
