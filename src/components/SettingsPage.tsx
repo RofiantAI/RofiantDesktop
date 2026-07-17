@@ -1,0 +1,1183 @@
+import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  Download,
+  ExternalLink,
+  HardDrive,
+  Settings,
+  Zap,
+  Palette,
+  User,
+  Users,
+  Database,
+  Keyboard,
+  Plug,
+  Plus,
+  Trash2,
+  Eye,
+  EyeOff,
+  X,
+} from "lucide-react";
+import { customModelId, customProviderIdFromModel, type CustomProvider } from "../lib/providers";
+import { DEFAULT_SETTINGS } from "../lib/settings";
+import type { AppSettings, Density, FontSize, SendKey, Theme, UiScale } from "../lib/settings";
+import type { Agent } from "../lib/agents";
+import {
+  EASY_LOCAL_MODELS,
+  OLLAMA_BASE_URL,
+  deleteOllamaModel,
+  listInstalledOllamaModels,
+  pullOllamaModel,
+  type LocalModelDef,
+} from "../lib/ollama";
+import { Avatar } from "./Sidebar";
+
+type Section =
+  | "general"
+  | "providers"
+  | "models"
+  | "agents"
+  | "appearance"
+  | "account"
+  | "shortcuts"
+  | "data";
+
+const SECTION_GROUPS: { label: string; items: { id: Section; label: string; icon: typeof Settings }[] }[] = [
+  {
+    label: "Workspace",
+    items: [
+      { id: "general", label: "General", icon: Settings },
+      { id: "providers", label: "Providers", icon: Plug },
+      { id: "models", label: "Models", icon: HardDrive },
+      { id: "agents", label: "Agents", icon: Users },
+    ],
+  },
+  {
+    label: "Preferences",
+    items: [
+      { id: "appearance", label: "Appearance", icon: Palette },
+      { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
+    ],
+  },
+  {
+    label: "Account",
+    items: [
+      { id: "account", label: "Account", icon: User },
+      { id: "data", label: "Data", icon: Database },
+    ],
+  },
+];
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative w-9 h-5 rounded-full shrink-0 ring-1 ring-inset transition-colors ${
+        checked ? "bg-accent-success ring-accent-success" : "bg-background-tertiary ring-border"
+      }`}
+    >
+      <span
+        className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
+          checked ? "translate-x-[14px]" : ""
+        }`}
+      />
+    </button>
+  );
+}
+
+function Row({
+  label,
+  description,
+  children,
+}: {
+  label: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-3 border-b border-border last:border-b-0">
+      <div className="min-w-0">
+        <div className="text-[13px] text-foreground">{label}</div>
+        {description && <div className="text-[12px] text-foreground-muted mt-0.5">{description}</div>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div className="text-[13px] text-foreground-secondary mt-6 mb-2 first:mt-0">{children}</div>;
+}
+
+function Card({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-border bg-[#1f1f1f] divide-y divide-border overflow-hidden">
+      {children}
+    </div>
+  );
+}
+
+function CardRow({
+  label,
+  description,
+  icon,
+  children,
+}: {
+  label: string;
+  description?: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-4 py-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+          {icon}
+          {label}
+        </div>
+        {description && (
+          <div className="text-[12px] text-foreground-muted mt-0.5 leading-relaxed">{description}</div>
+        )}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-background-tertiary border border-border">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          className={`px-2.5 h-6 rounded-md text-[12px] transition-colors ${
+            value === opt.value
+              ? "bg-card text-foreground shadow-sm"
+              : "text-foreground-muted hover:text-foreground"
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Dropdown<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="relative inline-flex items-center">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className="h-7 pl-2 pr-6 rounded-md text-[12px] bg-background-tertiary border border-border text-foreground outline-none cursor-pointer appearance-none"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value} className="bg-background-tertiary text-foreground">
+            {opt.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="w-3 h-3 text-foreground-muted absolute right-2 pointer-events-none" />
+    </div>
+  );
+}
+
+export function SettingsPage({
+  settings,
+  onChange,
+  onClose,
+  userEmail,
+  userAvatarUrl,
+  plan,
+  isPro,
+  onSignIn,
+  onSignOut,
+  onClearConversations,
+  onExportData,
+}: {
+  settings: AppSettings;
+  onChange: (patch: Partial<AppSettings>) => void;
+  onClose: () => void;
+  userEmail: string | null;
+  userAvatarUrl: string | null;
+  plan: string;
+  isPro: boolean;
+  onSignIn: () => void;
+  onSignOut: () => void;
+  onClearConversations: () => void;
+  onExportData: () => void;
+}) {
+  const [section, setSection] = useState<Section>("general");
+  const [newProvider, setNewProvider] = useState({ name: "", baseUrl: "", model: "", apiKey: "" });
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [addProviderOpen, setAddProviderOpen] = useState(false);
+
+  useEffect(() => {
+    if (!addProviderOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setAddProviderOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [addProviderOpen]);
+
+  function addProvider() {
+    const name = newProvider.name.trim();
+    const baseUrl = newProvider.baseUrl.trim().replace(/\/+$/, "");
+    const model = newProvider.model.trim();
+    const apiKey = newProvider.apiKey.trim();
+    if (!name || !baseUrl || !model || !apiKey || !/^https?:\/\//.test(baseUrl)) return;
+    const provider: CustomProvider = { id: crypto.randomUUID(), name, baseUrl, model, apiKey };
+    onChange({ customProviders: [...settings.customProviders, provider], model: customModelId(provider.id) });
+    setNewProvider({ name: "", baseUrl: "", model: "", apiKey: "" });
+    setShowApiKey(false);
+    setAddProviderOpen(false);
+  }
+
+  function removeProvider(id: string) {
+    const remaining = settings.customProviders.filter((p) => p.id !== id);
+    const patch: Partial<AppSettings> = { customProviders: remaining };
+    if (customProviderIdFromModel(settings.model) === id) {
+      patch.model = "openai/gpt-oss-20b";
+    }
+    onChange(patch);
+  }
+
+  const [installedLocalModels, setInstalledLocalModels] = useState<string[] | null>(null);
+  const [ollamaUnreachable, setOllamaUnreachable] = useState(false);
+  const [pullingModels, setPullingModels] = useState<
+    Record<string, { status: string; pct: number | null }>
+  >({});
+
+  useEffect(() => {
+    if (section !== "models") return;
+    let cancelled = false;
+    listInstalledOllamaModels()
+      .then((names) => {
+        if (cancelled) return;
+        setInstalledLocalModels(names);
+        setOllamaUnreachable(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setInstalledLocalModels(null);
+        setOllamaUnreachable(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [section]);
+
+  function findLocalProvider(m: LocalModelDef) {
+    return settings.customProviders.find((p) => p.baseUrl === OLLAMA_BASE_URL && p.model === m.id);
+  }
+
+  async function downloadLocalModel(m: LocalModelDef) {
+    setPullingModels((prev) => ({ ...prev, [m.id]: { status: "starting", pct: null } }));
+    try {
+      await pullOllamaModel(m.id, (progress) => {
+        const pct =
+          progress.total && progress.completed
+            ? Math.round((progress.completed / progress.total) * 100)
+            : null;
+        setPullingModels((prev) => ({ ...prev, [m.id]: { status: progress.status, pct } }));
+      });
+      setInstalledLocalModels((prev) => [...(prev ?? []), m.id]);
+    } catch (err) {
+      setOllamaUnreachable(true);
+      console.error("Ollama pull failed:", err);
+    } finally {
+      setPullingModels((prev) => {
+        const next = { ...prev };
+        delete next[m.id];
+        return next;
+      });
+    }
+  }
+
+  function useLocalModel(m: LocalModelDef) {
+    const existing = findLocalProvider(m);
+    if (existing) {
+      onChange({ model: customModelId(existing.id) });
+      return;
+    }
+    const provider: CustomProvider = {
+      id: crypto.randomUUID(),
+      name: m.name,
+      baseUrl: OLLAMA_BASE_URL,
+      model: m.id,
+      apiKey: "ollama",
+    };
+    onChange({ customProviders: [...settings.customProviders, provider], model: customModelId(provider.id) });
+  }
+
+  async function removeLocalModel(m: LocalModelDef) {
+    if (!window.confirm(`Delete "${m.name}" from disk? This can't be undone.`)) return;
+    try {
+      await deleteOllamaModel(m.id);
+      setInstalledLocalModels((prev) => (prev ?? []).filter((n) => n !== m.id));
+      const provider = findLocalProvider(m);
+      if (provider) removeProvider(provider.id);
+    } catch (err) {
+      console.error("Ollama delete failed:", err);
+    }
+  }
+
+  const [newAgent, setNewAgent] = useState({ name: "", systemPrompt: "" });
+  const [addAgentOpen, setAddAgentOpen] = useState(false);
+
+  useEffect(() => {
+    if (!addAgentOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setAddAgentOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [addAgentOpen]);
+
+  function addAgent() {
+    const name = newAgent.name.trim();
+    const systemPrompt = newAgent.systemPrompt.trim();
+    if (!name || !systemPrompt) return;
+    const agent: Agent = { id: crypto.randomUUID(), name, systemPrompt };
+    onChange({ agents: [...settings.agents, agent], activeAgentId: agent.id });
+    setNewAgent({ name: "", systemPrompt: "" });
+    setAddAgentOpen(false);
+  }
+
+  function removeAgent(id: string) {
+    const remaining = settings.agents.filter((a) => a.id !== id);
+    const patch: Partial<AppSettings> = { agents: remaining };
+    if (settings.activeAgentId === id) patch.activeAgentId = null;
+    onChange(patch);
+  }
+
+  return (
+    <div className="flex h-full overflow-hidden bg-background text-foreground">
+      <aside className="w-[220px] shrink-0 border-r border-border bg-background-secondary flex flex-col">
+        <div className="h-11 flex items-center px-3 shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center gap-1.5 text-[13px] text-foreground-secondary hover:text-foreground transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back
+          </button>
+        </div>
+        <nav className="px-2 py-2 overflow-y-auto">
+          {SECTION_GROUPS.map((group) => (
+            <div key={group.label} className="mb-3 last:mb-0">
+              <div className="px-2 mb-1 text-[11px] font-medium text-foreground-muted uppercase tracking-wide">
+                {group.label}
+              </div>
+              <div className="space-y-0.5">
+                {group.items.map((s) => {
+                  const Icon = s.icon;
+                  const active = section === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setSection(s.id)}
+                      className={`flex items-center gap-2.5 w-full h-8 px-2 rounded-md text-[13px] transition-colors text-left ${
+                        active
+                          ? "bg-background-tertiary text-foreground"
+                          : "text-foreground-secondary hover:bg-background-tertiary/60 hover:text-foreground"
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
+      </aside>
+
+      <main className="flex-1 overflow-y-auto">
+        <div className="max-w-xl mx-auto px-8 py-10">
+          {section === "general" && (
+            <div>
+              <h1 className="text-[18px] font-medium mb-6">General</h1>
+
+              <Card>
+                <CardRow
+                  label="Rofiant Account"
+                  description={"Manage your account and billing"}
+                >
+                  {userEmail ? (
+                    <button
+                      type="button"
+                      onClick={() => void openUrl("https://rofiant.ca/account")}
+                      className="flex items-center gap-1.5 h-7 px-3 rounded-md border border-border text-[12px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
+                    >
+                      Open
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={onSignIn}
+                      className="h-7 px-3 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition-opacity"
+                    >
+                      Sign in
+                    </button>
+                  )}
+                </CardRow>
+                {!isPro && (
+                  <CardRow
+                    label="Upgrade to Pro"
+                    description="Entry-level plan with access to premium models and more"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => void openUrl("https://rofiant.ca/pricing")}
+                      className="flex items-center gap-1 h-7 px-3 rounded-md bg-accent-primary text-white text-[12px] font-medium hover:opacity-90 transition-opacity"
+                    >
+                      <Zap className="w-3 h-3" />
+                      Upgrade
+                    </button>
+                  </CardRow>
+                )}
+              </Card>
+
+              <SectionLabel>Custom instructions</SectionLabel>
+              <textarea
+                value={settings.customInstructions}
+                onChange={(e) => onChange({ customInstructions: e.target.value })}
+                placeholder="e.g. Answer concisely. Prefer code over prose."
+                rows={4}
+                className="w-full px-3 py-2 rounded-lg bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light resize-none"
+              />
+
+              <SectionLabel>Messages</SectionLabel>
+              <Card>
+                <CardRow
+                  label="Context window"
+                  description={`Send the last ${settings.contextLimit} messages as context`}
+                >
+                  <input
+                    type="range"
+                    min={4}
+                    max={50}
+                    step={2}
+                    value={settings.contextLimit}
+                    onChange={(e) => onChange({ contextLimit: Number(e.target.value) })}
+                    className="w-32 accent-foreground"
+                  />
+                </CardRow>
+                <CardRow
+                  label="Send message with"
+                  description={
+                    settings.sendKey === "mod-enter"
+                      ? "⌘/Ctrl+Enter sends, Enter adds a line break"
+                      : "Enter sends, Shift+Enter adds a line break"
+                  }
+                >
+                  <SegmentedControl<SendKey>
+                    value={settings.sendKey}
+                    onChange={(v) => onChange({ sendKey: v })}
+                    options={[
+                      { value: "enter", label: "Enter" },
+                      { value: "mod-enter", label: "⌘Enter" },
+                    ]}
+                  />
+                </CardRow>
+                <CardRow label="Spellcheck" description="Underline misspelled words while typing">
+                  <Toggle
+                    checked={settings.spellcheck}
+                    onChange={(v) => onChange({ spellcheck: v })}
+                  />
+                </CardRow>
+              </Card>
+
+              <SectionLabel>Notifications</SectionLabel>
+              <Card>
+                <CardRow label="Sound on response" description="Play a tone when a reply finishes">
+                  <Toggle
+                    checked={settings.responseSound}
+                    onChange={(v) => onChange({ responseSound: v })}
+                  />
+                </CardRow>
+                <CardRow
+                  label="Desktop notifications"
+                  description="Notify when a reply finishes while the window is unfocused"
+                >
+                  <Toggle
+                    checked={settings.notifyOnResponse}
+                    onChange={(v) => onChange({ notifyOnResponse: v })}
+                  />
+                </CardRow>
+              </Card>
+
+              {userEmail && (
+                <button
+                  type="button"
+                  onClick={onSignOut}
+                  className="mt-6 h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
+                >
+                  Log Out
+                </button>
+              )}
+            </div>
+          )}
+
+          {section === "providers" && (
+            <div>
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h1 className="text-[18px] font-medium mb-2">Providers</h1>
+                  <p className="text-[13px] text-foreground-muted">
+                    Connect your own AI provider using an OpenAI-compatible API (OpenAI, OpenRouter,
+                    Together, a local Ollama server, etc). Your API key is sent directly to that
+                    provider and never touches Rofiant's servers.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAddProviderOpen(true)}
+                  className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition-opacity shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add provider
+                </button>
+              </div>
+
+              {settings.customProviders.length === 0 ? (
+                <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6">
+                  <Plug className="w-5 h-5 text-foreground-muted mb-2" />
+                  <div className="text-[13px] text-foreground-secondary">No providers yet</div>
+                  <div className="text-[12px] text-foreground-muted mt-0.5">
+                    Add one to start chatting through your own API key.
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1.5 mb-6">
+                  {settings.customProviders.map((p) => {
+                    const id = customModelId(p.id);
+                    const active = settings.model === id;
+                    return (
+                      <div
+                        key={p.id}
+                        className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border ${
+                          active ? "border-accent-primary/40 bg-accent-primary/10" : "border-border"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onChange({ model: id })}
+                          className="min-w-0 text-left flex-1"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-sm text-foreground font-medium truncate">
+                              {p.name}
+                            </span>
+                            {active && <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />}
+                          </span>
+                          <span className="block text-xs text-foreground-muted truncate">
+                            {p.model} · {p.baseUrl}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(`Remove provider "${p.name}"? This can't be undone.`)) {
+                              removeProvider(p.id);
+                            }
+                          }}
+                          title="Remove provider"
+                          className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {addProviderOpen && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 animate-[fadeIn_150ms_ease-out]"
+                  onClick={() => setAddProviderOpen(false)}
+                >
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full max-w-sm rounded-lg border border-border bg-background shadow-xl p-4 space-y-2.5 animate-[modalIn_180ms_ease-out]"
+                  >
+                    <div className="flex items-center justify-between mb-0.5">
+                      <div className="text-[13px] font-medium text-foreground">Add provider</div>
+                      <button
+                        type="button"
+                        onClick={() => setAddProviderOpen(false)}
+                        title="Close"
+                        className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <input
+                      autoFocus
+                      value={newProvider.name}
+                      onChange={(e) => setNewProvider((s) => ({ ...s, name: e.target.value }))}
+                      placeholder="Name (e.g. OpenAI)"
+                      className="w-full h-8 px-2.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light"
+                    />
+                    <input
+                      value={newProvider.baseUrl}
+                      onChange={(e) => setNewProvider((s) => ({ ...s, baseUrl: e.target.value }))}
+                      placeholder="Base URL (e.g. https://api.openai.com/v1)"
+                      className="w-full h-8 px-2.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light"
+                    />
+                    <input
+                      value={newProvider.model}
+                      onChange={(e) => setNewProvider((s) => ({ ...s, model: e.target.value }))}
+                      placeholder="Model (e.g. gpt-4o-mini)"
+                      className="w-full h-8 px-2.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light"
+                    />
+                    <div className="relative">
+                      <input
+                        value={newProvider.apiKey}
+                        onChange={(e) => setNewProvider((s) => ({ ...s, apiKey: e.target.value }))}
+                        placeholder="API key"
+                        type={showApiKey ? "text" : "password"}
+                        className="w-full h-8 pl-2.5 pr-8 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKey((v) => !v)}
+                        title={showApiKey ? "Hide API key" : "Show API key"}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-foreground-muted hover:text-foreground transition-colors"
+                      >
+                        {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setAddProviderOpen(false)}
+                        className="h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={addProvider}
+                        disabled={
+                          !newProvider.name.trim() ||
+                          !/^https?:\/\//.test(newProvider.baseUrl.trim()) ||
+                          !newProvider.model.trim() ||
+                          !newProvider.apiKey.trim()
+                        }
+                        className="h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                      >
+                        Add provider
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {section === "models" && (
+            <div>
+              <h1 className="text-[18px] font-medium mb-2">Models</h1>
+              <p className="text-[13px] text-foreground-muted mb-6">
+                Download small open models to run locally through{" "}
+                <button
+                  type="button"
+                  onClick={() => void openUrl("https://ollama.com")}
+                  className="underline hover:text-foreground"
+                >
+                  Ollama
+                </button>
+                . Nothing leaves your machine and no API key is needed.
+              </p>
+
+              {ollamaUnreachable && (
+                <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6">
+                  <HardDrive className="w-5 h-5 text-foreground-muted mb-2" />
+                  <div className="text-[13px] text-foreground-secondary">Can't reach Ollama</div>
+                  <div className="text-[12px] text-foreground-muted mt-0.5 max-w-xs">
+                    Install Ollama and make sure it's running, then reopen this tab.
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                {EASY_LOCAL_MODELS.map((m) => {
+                  const installed = installedLocalModels?.includes(m.id) ?? false;
+                  const localProvider = findLocalProvider(m);
+                  const active = localProvider ? customModelId(localProvider.id) === settings.model : false;
+                  const progress = pullingModels[m.id];
+                  return (
+                    <div
+                      key={m.id}
+                      className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border ${
+                        active ? "border-accent-primary/40 bg-accent-primary/10" : "border-border"
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm text-foreground font-medium">{m.name}</span>
+                          <span className="text-[11px] text-foreground-muted">{m.size}</span>
+                          {active && <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />}
+                        </div>
+                        <div className="text-xs text-foreground-muted">{m.desc}</div>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-1.5">
+                        {progress ? (
+                          <span className="text-[12px] text-foreground-muted w-16 text-right">
+                            {progress.pct != null ? `${progress.pct}%` : progress.status}
+                          </span>
+                        ) : installed ? (
+                          <>
+                            {!active && (
+                              <button
+                                type="button"
+                                onClick={() => useLocalModel(m)}
+                                className="h-7 px-2.5 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition-opacity"
+                              >
+                                Use
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => void removeLocalModel(m)}
+                              title="Delete from disk"
+                              className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-500/10 transition-colors shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void downloadLocalModel(m)}
+                            disabled={installedLocalModels === null}
+                            className="flex items-center gap-1 h-7 px-2.5 rounded-md border border-border text-[12px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <Download className="w-3 h-3" />
+                            Download
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {section === "agents" && (
+            <div>
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h1 className="text-[18px] font-medium mb-2">Agents</h1>
+                  <p className="text-[13px] text-foreground-muted">
+                    Save custom system prompts as agents and switch between them from the composer
+                    (next to the model picker) without retyping instructions each time.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAddAgentOpen(true)}
+                  className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition-opacity shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add agent
+                </button>
+              </div>
+
+              {settings.agents.length === 0 ? (
+                <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6">
+                  <Users className="w-5 h-5 text-foreground-muted mb-2" />
+                  <div className="text-[13px] text-foreground-secondary">No agents yet</div>
+                  <div className="text-[12px] text-foreground-muted mt-0.5">
+                    Add one to give the model a reusable persona or task-specific instructions.
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1.5 mb-6">
+                  {settings.agents.map((a) => {
+                    const active = settings.activeAgentId === a.id;
+                    return (
+                      <div
+                        key={a.id}
+                        className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border ${
+                          active ? "border-accent-primary/40 bg-accent-primary/10" : "border-border"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onChange({ activeAgentId: active ? null : a.id, chatMode: "ask" })
+                          }
+                          className="min-w-0 text-left flex-1"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-sm text-foreground font-medium truncate">
+                              {a.name}
+                            </span>
+                            {active && <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />}
+                          </span>
+                          <span className="block text-xs text-foreground-muted truncate">
+                            {a.systemPrompt}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(`Remove agent "${a.name}"? This can't be undone.`)) {
+                              removeAgent(a.id);
+                            }
+                          }}
+                          title="Remove agent"
+                          className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {addAgentOpen && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 animate-[fadeIn_150ms_ease-out]"
+                  onClick={() => setAddAgentOpen(false)}
+                >
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full max-w-sm rounded-lg border border-border bg-background shadow-xl p-4 space-y-2.5 animate-[modalIn_180ms_ease-out]"
+                  >
+                    <div className="flex items-center justify-between mb-0.5">
+                      <div className="text-[13px] font-medium text-foreground">Add agent</div>
+                      <button
+                        type="button"
+                        onClick={() => setAddAgentOpen(false)}
+                        title="Close"
+                        className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <input
+                      autoFocus
+                      value={newAgent.name}
+                      onChange={(e) => setNewAgent((s) => ({ ...s, name: e.target.value }))}
+                      placeholder="Name (e.g. Code reviewer)"
+                      className="w-full h-8 px-2.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light"
+                    />
+                    <textarea
+                      value={newAgent.systemPrompt}
+                      onChange={(e) => setNewAgent((s) => ({ ...s, systemPrompt: e.target.value }))}
+                      placeholder="System prompt (e.g. Review code for bugs and style issues. Be concise.)"
+                      rows={5}
+                      className="w-full px-2.5 py-2 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light resize-none"
+                    />
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setAddAgentOpen(false)}
+                        className="h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={addAgent}
+                        disabled={!newAgent.name.trim() || !newAgent.systemPrompt.trim()}
+                        className="h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                      >
+                        Add agent
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {section === "appearance" && (
+            <div>
+              <h1 className="text-[18px] font-medium mb-6">Appearance</h1>
+              <div>
+                <Row label="Theme">
+                  <SegmentedControl<Theme>
+                    value={settings.theme}
+                    onChange={(v) => onChange({ theme: v })}
+                    options={[
+                      { value: "light", label: "Light" },
+                      { value: "dark", label: "Dark" },
+                      { value: "system", label: "System" },
+                    ]}
+                  />
+                </Row>
+                <Row label="Font size">
+                  <SegmentedControl<FontSize>
+                    value={settings.fontSize}
+                    onChange={(v) => onChange({ fontSize: v })}
+                    options={[
+                      { value: "sm", label: "Small" },
+                      { value: "md", label: "Medium" },
+                      { value: "lg", label: "Large" },
+                    ]}
+                  />
+                </Row>
+                <Row label="Message density">
+                  <SegmentedControl<Density>
+                    value={settings.density}
+                    onChange={(v) => onChange({ density: v })}
+                    options={[
+                      { value: "compact", label: "Compact" },
+                      { value: "comfortable", label: "Comfortable" },
+                    ]}
+                  />
+                </Row>
+                <Row label="Interface scale" description="Zoom the entire app in or out">
+                  <Dropdown<UiScale>
+                    value={settings.uiScale}
+                    onChange={(v) => onChange({ uiScale: v })}
+                    options={[
+                      { value: "80", label: "80%" },
+                      { value: "90", label: "90%" },
+                      { value: "100", label: "100%" },
+                      { value: "110", label: "110%" },
+                      { value: "125", label: "125%" },
+                      { value: "150", label: "150%" },
+                    ]}
+                  />
+                </Row>
+                <Row label="Show timestamps" description="Display time under each message">
+                  <Toggle
+                    checked={settings.showTimestamps}
+                    onChange={(v) => onChange({ showTimestamps: v })}
+                  />
+                </Row>
+                <Row label="Reduce motion" description="Turn off UI transitions and animations">
+                  <Toggle
+                    checked={settings.reduceMotion}
+                    onChange={(v) => onChange({ reduceMotion: v })}
+                  />
+                </Row>
+              </div>
+            </div>
+          )}
+
+          {section === "account" && (
+            <div>
+              <h1 className="text-[18px] font-medium mb-6">Account</h1>
+              {userEmail ? (
+                <div className="rounded-lg border border-border px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Avatar email={userEmail} avatarUrl={userAvatarUrl} size={32} />
+                      <div className="min-w-0">
+                        <div className="text-[13px] text-foreground truncate">{userEmail}</div>
+                        <div className="text-[12px] text-foreground-muted">Signed in</div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onSignOut}
+                      className="h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors shrink-0"
+                    >
+                      Sign out
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-border">
+                    <span className="text-[12px] text-foreground-muted">Plan</span>
+                    <span
+                      className={`text-[11px] font-medium px-2 py-0.5 rounded-full capitalize ${
+                        isPro
+                          ? "bg-accent-primary/10 text-accent-primary"
+                          : "bg-background-tertiary text-foreground-secondary"
+                      }`}
+                    >
+                      {plan}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+              <div className="mt-4">
+                <Row
+                  label="Website sync"
+                  description="Keep conversations in sync with rofiant.ca"
+                >
+                  <Toggle
+                    checked={settings.websiteSync}
+                    onChange={(v) => onChange({ websiteSync: v })}
+                  />
+                </Row>
+              </div>
+              {!userEmail && (
+                <div className="flex items-center justify-between rounded-lg border border-border px-3 py-3">
+                  <div className="text-[13px] text-foreground-secondary">You're not signed in</div>
+                  <button
+                    type="button"
+                    onClick={onSignIn}
+                    className="h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition-opacity shrink-0"
+                  >
+                    Sign in
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {section === "shortcuts" && (
+            <div>
+              <h1 className="text-[18px] font-medium mb-2">Shortcuts</h1>
+              <p className="text-[13px] text-foreground-muted mb-6">
+                ⌘ is Ctrl on Windows/Linux.
+              </p>
+              <div className="text-[11px] font-medium text-foreground-secondary uppercase tracking-wide mt-2 mb-1">
+                Navigation
+              </div>
+              <div className="mb-4">
+                {[
+                  ["New chat", "⌘N"],
+                  ["Go home", "⌘H"],
+                  ["Command palette", "⌘P"],
+                  ["Search chats", "⌘K"],
+                  ["Toggle sidebar", "⌘B"],
+                  ["Settings", "⌘,"],
+                  ["View changed files", "⌘Y"],
+                ].map(([label, keys]) => (
+                  <Row key={label} label={label}>
+                    <kbd className="px-2 py-1 rounded-md bg-background-tertiary border border-border text-[12px] text-foreground-secondary">
+                      {keys}
+                    </kbd>
+                  </Row>
+                ))}
+              </div>
+              <div className="text-[11px] font-medium text-foreground-secondary uppercase tracking-wide mt-2 mb-1">
+                Tabs
+              </div>
+              <div className="mb-4">
+                {[
+                  ["Close tab", "⌘W"],
+                  ["Next tab", "⌘⇧]"],
+                  ["Previous tab", "⌘⇧["],
+                  ["Jump to tab 1-9", "⌘1 … ⌘9"],
+                ].map(([label, keys]) => (
+                  <Row key={label} label={label}>
+                    <kbd className="px-2 py-1 rounded-md bg-background-tertiary border border-border text-[12px] text-foreground-secondary">
+                      {keys}
+                    </kbd>
+                  </Row>
+                ))}
+              </div>
+              <div className="text-[11px] font-medium text-foreground-secondary uppercase tracking-wide mt-2 mb-1">
+                Messages
+              </div>
+              <div>
+                {[
+                  ["Send message", settings.sendKey === "mod-enter" ? "⌘⏎" : "⏎"],
+                  ["New line", settings.sendKey === "mod-enter" ? "⏎" : "⇧⏎"],
+                  ["Stop generating / close dialog", "Esc"],
+                ].map(([label, keys]) => (
+                  <Row key={label} label={label}>
+                    <kbd className="px-2 py-1 rounded-md bg-background-tertiary border border-border text-[12px] text-foreground-secondary">
+                      {keys}
+                    </kbd>
+                  </Row>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {section === "data" && (
+            <div>
+              <h1 className="text-[18px] font-medium mb-6">Data</h1>
+              <Row
+                label="Export data"
+                description="Download all conversations as a JSON file"
+              >
+                <button
+                  type="button"
+                  onClick={onExportData}
+                  className="h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors shrink-0"
+                >
+                  Export
+                </button>
+              </Row>
+              <Row
+                label="Reset settings to defaults"
+                description="Restore theme, font size, shortcuts behavior, etc. Conversations are kept."
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm("Reset all settings to their defaults? Conversations are not affected.")) {
+                      onChange({
+                        ...DEFAULT_SETTINGS,
+                        customProviders: settings.customProviders,
+                        model: settings.model,
+                        agents: settings.agents,
+                        activeAgentId: settings.activeAgentId,
+                      });
+                    }
+                  }}
+                  className="h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors shrink-0"
+                >
+                  Reset
+                </button>
+              </Row>
+              <Row
+                label="Clear all chats"
+                description="Permanently delete every conversation on this device"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm("Delete every conversation on this device? This can't be undone.")) {
+                      onClearConversations();
+                    }
+                  }}
+                  className="h-8 px-3 rounded-lg border border-red-200 text-[13px] text-red-600 hover:bg-red-50 transition-colors shrink-0"
+                >
+                  Clear
+                </button>
+              </Row>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}

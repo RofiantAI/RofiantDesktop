@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fafaf9;
+  --background-secondary: #f2f2ef;
+  --background-tertiary: #eeeeec;
+
+  --foreground: #1a1a18;
+  --foreground-secondary: #6b6b67;
+  --foreground-muted: #9b9b96;
+
+  --accent-primary: #4d6bc6;
+  --accent-secondary: #b8934a;
+  --accent-success: #2f9e6e;
+  --accent-warning: #c17f2e;
+  --accent-orange: #c2632a;
+
+  --border: #e6e6e2;
+  --border-light: #d8d8d3;
+
+  --card: #ffffff;
+  --card-hover: #f4f4f2;
+
+  --badge-bg: #f0f0ee;
+  --badge-border: #d8d8d3;
+
+  --code-bg: #f2f2ef;
+  --code-border: #e2e2de;
+
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.dark {
+  --background: #141414;
+  --background-secondary: #181818;
+  --background-tertiary: #1c1c1e;
+
+  --foreground: #f5f5f4;
+  --foreground-secondary: #8c8c8c;
+  --foreground-muted: #71717a;
+
+  --accent-primary: #6b8afd;
+  --accent-secondary: #d1a752;
+  --accent-success: #45b787;
+  --accent-warning: #e0a24d;
+  --accent-orange: #e0793e;
+
+  --border: #27272a;
+  --border-light: #3f3f46;
+
+  --card: #141414;
+  --card-hover: #1e1e1e;
+
+  --badge-bg: #1c1c1e;
+  --badge-border: #3f3f46;
+
+  --code-bg: #0d0d0d;
+  --code-border: #27272a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-background-secondary: var(--background-secondary);
+  --color-background-tertiary: var(--background-tertiary);
+  --color-foreground: var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-accent-primary: var(--accent-primary);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-accent-success: var(--accent-success);
+  --color-accent-warning: var(--accent-warning);
+  --color-accent-orange: var(--accent-orange);
+  --color-border: var(--border);
+  --color-border-light: var(--border-light);
+  --color-card: var(--card);
+  --color-card-hover: var(--card-hover);
+  --color-badge-bg: var(--badge-bg);
+  --color-badge-border: var(--badge-border);
+  --color-code-bg: var(--code-bg);
+  --color-code-border: var(--code-border);
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-light) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+.reduce-motion,
+.reduce-motion * {
+  transition: none !important;
+  animation: none !important;
+}
