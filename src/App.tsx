@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { Sidebar } from "./components/Sidebar";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { TabBar } from "./components/TabBar";
 import { ChatPanel } from "./components/ChatPanel";
 import { SettingsPage } from "./components/SettingsPage";
 import { AuthPage } from "./components/AuthPage";
+import { MfaChallenge } from "./components/MfaChallenge";
 import { FileChangesPanel } from "./components/FileChangesPanel";
 import { ChangeHistoryPage } from "./components/ChangeHistoryPage";
 import { useConfirmDialog } from "./components/ConfirmDialog";
@@ -45,6 +47,8 @@ import {
   touchRemoteConversation,
 } from "./lib/sync";
 import { loadSettings, saveSettings, resolveTheme, playDoneSound, notifyResponse } from "./lib/settings";
+import { connectMcpServer } from "./lib/mcp";
+import { track, setTelemetryEnabled, setTelemetryUserId } from "./lib/telemetry";
 import { loadFileChanges, saveFileChanges } from "./lib/fileChanges";
 import { checkForUpdate } from "./lib/updater";
 import type { AppSettings } from "./lib/settings";
@@ -79,18 +83,20 @@ function makeConversation(title = "New chat"): Conversation {
   };
 }
 
-const initial = makeConversation("Welcome");
-
 function App() {
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
-  const [conversations, setConversations] = useState<Conversation[]>([initial]);
-  const [openTabIds, setOpenTabIds] = useState<string[]>([initial.id]);
-  const [activeId, setActiveId] = useState<string | null>(initial.id);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [openTabIds, setOpenTabIds] = useState<string[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [rules, setRules] = useState<Rule[]>(() => loadRules());
   const [session, setSession] = useState<Session | null>(null);
+  // Set while a session exists but the account requires a second factor
+  // (aal1 -> aal2) that hasn't been supplied yet. `session` stays null until
+  // that's resolved, so nothing else in the app treats sign-in as complete.
+  const [pendingMfaSession, setPendingMfaSession] = useState<Session | null>(null);
   const [showAuth, setShowAuth] = useState(false);
   const [fileChanges, setFileChanges] = useState<FileChange[]>(() => loadFileChanges());
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
@@ -105,16 +111,119 @@ function App() {
   }, []);
 
   useEffect(() => {
+    for (const server of settings.mcpServers) {
+      if (server.enabled) {
+        connectMcpServer(server).catch((err) =>
+          console.error(`Failed to connect MCP server "${server.name}":`, err),
+        );
+      }
+    }
+    // Only ever connect the servers present at launch — once Settings is
+    // open, its own handlers own connecting/disconnecting as the user edits
+    // the list, so this shouldn't re-run on every settings change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    setTelemetryEnabled(settings.telemetryEnabled);
+  }, [settings.telemetryEnabled]);
+
+  useEffect(() => {
+    track("app_opened");
+  }, []);
+
+  useEffect(() => {
+    setTelemetryUserId(session?.user.id ?? null);
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    async function completeAuthRedirect(urls: string[]) {
+      for (const raw of urls) {
+        let parsed: URL;
+        try {
+          parsed = new URL(raw);
+        } catch {
+          continue;
+        }
+        const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+        const oauthError =
+          parsed.searchParams.get("error_description") ??
+          parsed.searchParams.get("error") ??
+          hashParams.get("error_description") ??
+          hashParams.get("error");
+        if (oauthError) {
+          console.error("Sign-in redirect failed:", oauthError);
+          track("auth_redirect_failed");
+          continue;
+        }
+
+        // Website signup (ROFIANT_SIGNUP_URL) hands back tokens directly.
+        const accessToken = hashParams.get("access_token") ?? parsed.searchParams.get("access_token");
+        const refreshToken = hashParams.get("refresh_token") ?? parsed.searchParams.get("refresh_token");
+        if (accessToken && refreshToken) {
+          const { error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (error) {
+            console.error("Failed to apply session from signup redirect:", error);
+            track("auth_redirect_failed");
+          }
+          continue;
+        }
+
+        // Google OAuth (PKCE) hands back a code to exchange instead.
+        const code = parsed.searchParams.get("code");
+        if (!code) continue;
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) {
+          console.error("Failed to complete Google sign-in:", error);
+          track("google_signin_failed");
+        }
+      }
+    }
+
+    // Covers a cold start (app wasn't running when the browser redirected back).
+    void getCurrent().then((urls) => {
+      if (urls) void completeAuthRedirect(urls);
+    });
+
+    // Covers the app already being open when the redirect arrives.
+    const unlistenPromise = onOpenUrl((urls) => void completeAuthRedirect(urls));
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    async function applySession(newSession: Session | null) {
+      if (!newSession) {
+        setSession(null);
+        setPendingMfaSession(null);
+        return;
+      }
+      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (aal && aal.nextLevel === "aal2" && aal.nextLevel !== aal.currentLevel) {
+        setSession(null);
+        setPendingMfaSession(newSession);
+        return;
+      }
+      setPendingMfaSession(null);
+      setSession(newSession);
+    }
+
     supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+      void applySession(data.session);
       // The cached session's user_metadata (avatar, plan, ...) can be stale —
       // refresh it from the server so changes made on the website (e.g. a
       // newly uploaded profile picture) show up without a manual sign-out.
       if (data.session) void supabase.auth.refreshSession();
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
+      void applySession(newSession);
       if (newSession) setShowAuth(false);
+      if (event === "SIGNED_IN") track("signed_in");
+      if (event === "SIGNED_OUT") track("signed_out");
     });
 
     function handleFocus() {
@@ -137,20 +246,18 @@ function App() {
     loadedUserIdRef.current = syncKey;
 
     if (!userId || !settings.websiteSync) {
-      const fresh = makeConversation("Welcome");
-      setConversations([fresh]);
-      setOpenTabIds([fresh.id]);
-      setActiveId(fresh.id);
+      setConversations([]);
+      setOpenTabIds([]);
+      setActiveId(null);
       return;
     }
 
     let cancelled = false;
     fetchRemoteConversations(userId).then((remote) => {
       if (cancelled) return;
-      const loaded = remote.length > 0 ? remote : [makeConversation("Welcome")];
-      setConversations(loaded);
-      setOpenTabIds([loaded[0].id]);
-      setActiveId(loaded[0].id);
+      setConversations(remote);
+      setOpenTabIds(remote.length > 0 ? [remote[0].id] : []);
+      setActiveId(remote.length > 0 ? remote[0].id : null);
     });
     return () => {
       cancelled = true;
@@ -241,6 +348,7 @@ function App() {
     setConversations((prev) => [c, ...prev]);
     setOpenTabIds((prev) => [...prev, c.id]);
     setActiveId(c.id);
+    track("new_chat_created");
   }, [conversations.length]);
 
   const handleRenameConversation = useCallback(
@@ -264,8 +372,15 @@ function App() {
   );
 
   const handleDeleteConversation = useCallback(
-    (id: string) => {
+    async (id: string) => {
       const target = conversations.find((c) => c.id === id);
+      const ok = await confirm({
+        title: target ? `Delete "${target.title}"?` : "Delete this chat?",
+        description: "This can't be undone.",
+        confirmLabel: "Delete",
+        danger: true,
+      });
+      if (!ok) return;
       setConversations((prev) => prev.filter((c) => c.id !== id));
       setOpenTabIds((prev) => {
         const next = prev.filter((t) => t !== id);
@@ -276,7 +391,7 @@ function App() {
       });
       if (settings.websiteSync && target?.remoteId) void deleteRemoteConversation(target.remoteId);
     },
-    [conversations, activeId, settings.websiteSync],
+    [conversations, activeId, settings.websiteSync, confirm],
   );
 
   const handleCloseTab = useCallback(
@@ -294,11 +409,17 @@ function App() {
 
   const handleClearConversations = useCallback(() => {
     if (session && settings.websiteSync) void clearRemoteConversations(session.user.id);
-    const fresh = makeConversation("Welcome");
-    setConversations([fresh]);
-    setOpenTabIds([fresh.id]);
-    setActiveId(fresh.id);
+    setConversations([]);
+    setOpenTabIds([]);
+    setActiveId(null);
   }, [session, settings.websiteSync]);
+
+  const handleCheckForUpdate = useCallback(async () => {
+    const update = await checkForUpdate();
+    setAvailableUpdate(update);
+    track("update_check", { found: !!update });
+    return update;
+  }, []);
 
   const handleExportData = useCallback(() => {
     const blob = new Blob([JSON.stringify(conversations, null, 2)], {
@@ -541,6 +662,7 @@ function App() {
           (delta) => applyDelta(delta),
           (usage: ChatUsage) => {
             void insertUsageEvent(session.user.id, usage.model, usage.inputTokens, usage.outputTokens);
+            track("message_sent", { model: usage.model, chat_mode: settings.chatMode });
           },
           (requestId) => activeRequestIdsRef.current.set(targetId, requestId),
           activeProvider ? { baseUrl: activeProvider.baseUrl, apiKey: activeProvider.apiKey } : null,
@@ -747,7 +869,9 @@ function App() {
 
   let content: React.ReactNode;
 
-  if (showAuth) {
+  if (pendingMfaSession) {
+    content = <MfaChallenge onSignOut={() => supabase.auth.signOut()} />;
+  } else if (showAuth) {
     content = <AuthPage onClose={() => setShowAuth(false)} />;
   } else if (historyOpen) {
     content = (
@@ -763,6 +887,7 @@ function App() {
         settings={settings}
         onChange={updateSettings}
         onClose={() => setSettingsOpen(false)}
+        sidebarOpen={sidebarOpen}
         userEmail={session?.user.email ?? null}
         userAvatarUrl={session ? getUserAvatarUrl(session.user) : null}
         plan={plan}
@@ -774,6 +899,7 @@ function App() {
         onSignOut={() => supabase.auth.signOut()}
         onClearConversations={handleClearConversations}
         onExportData={handleExportData}
+        onCheckForUpdate={handleCheckForUpdate}
       />
     );
   } else {

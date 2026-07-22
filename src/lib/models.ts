@@ -1,11 +1,32 @@
 export const FREE_MODELS = [
-  { id: "openai/gpt-oss-20b", name: "GPT OSS 20B", desc: "Fast: great for quick back-and-forth" },
-  { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B Instant", desc: "Lightest, fastest, best for avoiding rate limits" },
-  { id: "meta-llama/llama-4-scout-17b-16e-instruct", name: "Llama 4 Scout", desc: "Supports image uploads for vision tasks" },
+  {
+    id: "openai/gpt-oss-20b",
+    name: "GPT OSS 20B",
+    desc: "Fast: great for quick back-and-forth",
+  },
+  {
+    id: "llama-3.1-8b-instant",
+    name: "Llama 3.1 8B Instant",
+    desc: "Lightest, fastest, best for avoiding rate limits",
+  },
+  {
+    id: "qwen/qwen3.6-27b",
+    name: "Qwen 3.6 27B",
+    desc: "Supports image uploads for vision tasks",
+  },
+  {
+    id: "kiro-auto",
+    name: "Kiro Auto",
+    desc: "good general-purpose fallback",
+  },
 ] as const;
 
 export const PRO_MODELS = [
-  { id: "openai/gpt-oss-120b", name: "GPT OSS 120B", desc: "Best for deep thinking and tough problems" },
+  {
+    id: "openai/gpt-oss-120b",
+    name: "GPT OSS 120B",
+    desc: "Best for deep thinking and tough problems",
+  },
 ] as const;
 
 export const ALL_MODELS = [...FREE_MODELS, ...PRO_MODELS];
@@ -32,8 +53,18 @@ export function clampModelForPlan(model: string, isPro: boolean): string {
   return model;
 }
 
-export const VISION_MODEL_ID = "meta-llama/llama-4-scout-17b-16e-instruct";
+export const VISION_MODEL_ID = "qwen/qwen3.6-27b";
 
 export function isVisionModel(id: string): boolean {
   return id === VISION_MODEL_ID;
+}
+
+// Models proxied through Logfare (see supabase/functions/logfare-proxy and
+// model_uses_logfare in src-tauri/src/lib.rs — kept in sync manually).
+// Logfare is a free community-run inference API with no uptime guarantee,
+// so these are flagged as potentially unstable in the model picker.
+const LOGFARE_MODEL_IDS = new Set<string>(["kiro-auto"]);
+
+export function isLogfareModel(id: string): boolean {
+  return LOGFARE_MODEL_IDS.has(id);
 }

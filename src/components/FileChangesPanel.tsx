@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { diffLines } from "diff";
-import { FileText, PanelRight, X } from "lucide-react";
+import { FileText, FilePenLine, X } from "lucide-react";
 import type { FileChange } from "../types";
 
 const WIDTH_KEY = "rofiant_file_changes_panel_width";
@@ -77,9 +77,11 @@ export function FileChangesPanel({
   const [width, setWidth] = useState(loadWidth);
   const draggingRef = useRef(false);
 
+  // Re-select the newest change only when the count changes — see the same
+  // pattern (and rationale) in ChangeHistoryPage.
   useEffect(() => {
     setSelectedId(changes.at(-1)?.id ?? null);
-  }, [changes.length]);
+  }, [changes.length]); // oxlint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     function onMouseMove(e: MouseEvent) {
@@ -123,7 +125,7 @@ export function FileChangesPanel({
       />
       <div className="flex items-center justify-between h-11 px-3 border-b border-border shrink-0">
         <div className="flex items-center gap-2 text-[13px] text-foreground">
-          <PanelRight className="w-3.5 h-3.5 text-foreground-muted" />
+          <FilePenLine className="w-3.5 h-3.5 text-foreground-muted" />
           Changed files
         </div>
         <button

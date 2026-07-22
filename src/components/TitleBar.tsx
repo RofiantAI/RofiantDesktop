@@ -34,13 +34,21 @@ export function TitleBar({
     <div className="h-[32px] shrink-0 flex items-center bg-background-secondary border-b border-border select-none">
       <div
         data-tauri-drag-region
-        className="flex-1 h-full flex items-center px-3 gap-2"
+        className="flex-1 h-full flex items-center px-3 gap-3"
       >
-        <img
-          src="/beta.svg"
-          alt="Rofiant"
-          className="h-5 w-auto object-contain pointer-events-none"
-        />
+        <div className="flex items-center gap-1.5">
+          <img
+            src="/app-icon.svg"
+            alt=""
+            className="h-4 w-4 rounded-[5px] shrink-0 pointer-events-none"
+          />
+          <span className="text-[13px] font-medium text-foreground tracking-tight pointer-events-none">
+            Rofiant
+          </span>
+          {/* <span className="px-1 py-px rounded text-[9px] font-semibold uppercase tracking-wider leading-none text-foreground-muted bg-background-tertiary border border-border pointer-events-none">
+            Beta
+          </span> */}
+        </div>
         <button
           type="button"
           onClick={onToggleSidebar}

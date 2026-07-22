@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { getVersion } from "@tauri-apps/api/app";
+import type { Update } from "@tauri-apps/plugin-updater";
 import {
   ArrowLeft,
   Check,
@@ -10,7 +12,7 @@ import {
   Settings,
   Zap,
   Palette,
-  User,
+  CircleUser,
   Users,
   Database,
   Keyboard,
@@ -20,6 +22,13 @@ import {
   Eye,
   EyeOff,
   X,
+  Search,
+  BarChart3,
+  RefreshCw,
+  Cable,
+  Loader2,
+  CircleCheck,
+  CircleAlert,
 } from "lucide-react";
 import { customModelId, customProviderIdFromModel, type CustomProvider } from "../lib/providers";
 import { DEFAULT_SETTINGS } from "../lib/settings";
@@ -35,16 +44,19 @@ import {
 } from "../lib/ollama";
 import { Avatar } from "./Sidebar";
 import { useConfirmDialog } from "./ConfirmDialog";
+import { connectMcpServer, disconnectMcpServer, type McpServerConfig, type McpToolInfo } from "../lib/mcp";
 
 type Section =
   | "general"
   | "providers"
   | "models"
   | "agents"
+  | "mcp"
   | "appearance"
   | "profile"
   | "shortcuts"
-  | "data";
+  | "data"
+  | "telemetry";
 
 const SECTION_GROUPS: { label: string; items: { id: Section; label: string; icon: typeof Settings }[] }[] = [
   {
@@ -54,6 +66,7 @@ const SECTION_GROUPS: { label: string; items: { id: Section; label: string; icon
       { id: "providers", label: "Providers", icon: Plug },
       { id: "models", label: "Models", icon: Box },
       { id: "agents", label: "Agents", icon: Users },
+      { id: "mcp", label: "MCP Servers", icon: Cable },
     ],
   },
   {
@@ -66,8 +79,9 @@ const SECTION_GROUPS: { label: string; items: { id: Section; label: string; icon
   {
     label: "Account",
     items: [
-      { id: "profile", label: "Profile", icon: User },
+      { id: "profile", label: "Profile", icon: CircleUser },
       { id: "data", label: "Data", icon: Database },
+      { id: "telemetry", label: "Telemetry", icon: BarChart3 },
     ],
   },
 ];
@@ -79,13 +93,15 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative w-9 h-5 rounded-full shrink-0 ring-1 ring-inset transition-colors ${
-        checked ? "bg-accent-success ring-accent-success" : "bg-background-tertiary ring-border"
+      className={`relative w-9 h-5 rounded-full shrink-0 cursor-pointer ring-1 ring-inset transition-colors duration-150 ${
+        checked
+          ? "bg-accent-success ring-accent-success"
+          : "bg-background-tertiary ring-border hover:ring-border-light"
       }`}
     >
       <span
-        className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
-          checked ? "translate-x-[14px]" : ""
+        className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-150 ${
+          checked ? "translate-x-4" : "translate-x-0"
         }`}
       />
     </button>
@@ -211,6 +227,7 @@ export function SettingsPage({
   settings,
   onChange,
   onClose,
+  sidebarOpen,
   userEmail,
   userAvatarUrl,
   plan,
@@ -219,10 +236,12 @@ export function SettingsPage({
   onSignOut,
   onClearConversations,
   onExportData,
+  onCheckForUpdate,
 }: {
   settings: AppSettings;
   onChange: (patch: Partial<AppSettings>) => void;
   onClose: () => void;
+  sidebarOpen: boolean;
   userEmail: string | null;
   userAvatarUrl: string | null;
   plan: string;
@@ -231,9 +250,31 @@ export function SettingsPage({
   onSignOut: () => void;
   onClearConversations: () => void;
   onExportData: () => void;
+  onCheckForUpdate: () => Promise<Update | null>;
 }) {
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
-  const [section, setSection] = useState<Section>("general");
+  const [section, setSection] = useState<Section>(SECTION_GROUPS[0].items[0].id);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "latest" | "available" | "error">(
+    "idle",
+  );
+
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch((err) => console.error("Failed to read app version:", err));
+  }, []);
+
+  async function handleCheckForUpdate() {
+    setUpdateStatus("checking");
+    try {
+      const update = await onCheckForUpdate();
+      setUpdateStatus(update ? "available" : "latest");
+    } catch (err) {
+      console.error("Update check failed:", err);
+      setUpdateStatus("error");
+    }
+  }
   const [newProvider, setNewProvider] = useState({ name: "", baseUrl: "", model: "", apiKey: "" });
   const [showApiKey, setShowApiKey] = useState(false);
   const [addProviderOpen, setAddProviderOpen] = useState(false);
@@ -269,11 +310,94 @@ export function SettingsPage({
     onChange(patch);
   }
 
+  type McpStatus =
+    | { status: "idle" }
+    | { status: "connecting" }
+    | { status: "connected"; tools: McpToolInfo[] }
+    | { status: "error"; error: string };
+
+  const [mcpStatus, setMcpStatus] = useState<Record<string, McpStatus>>({});
+  const [addMcpOpen, setAddMcpOpen] = useState(false);
+  const [newMcpServer, setNewMcpServer] = useState({ name: "", commandLine: "", envText: "" });
+
+  async function connectMcp(server: McpServerConfig) {
+    setMcpStatus((s) => ({ ...s, [server.id]: { status: "connecting" } }));
+    try {
+      const tools = await connectMcpServer(server);
+      setMcpStatus((s) => ({ ...s, [server.id]: { status: "connected", tools } }));
+    } catch (err) {
+      setMcpStatus((s) => ({
+        ...s,
+        [server.id]: { status: "error", error: err instanceof Error ? err.message : String(err) },
+      }));
+    }
+  }
+
+  function toggleMcpServer(server: McpServerConfig) {
+    const enabled = !server.enabled;
+    const next = settings.mcpServers.map((s) => (s.id === server.id ? { ...s, enabled } : s));
+    onChange({ mcpServers: next });
+    if (enabled) {
+      void connectMcp({ ...server, enabled });
+    } else {
+      void disconnectMcpServer(server.id);
+      setMcpStatus((s) => ({ ...s, [server.id]: { status: "idle" } }));
+    }
+  }
+
+  useEffect(() => {
+    if (section !== "mcp") return;
+    for (const server of settings.mcpServers) {
+      if (server.enabled && !mcpStatus[server.id]) void connectMcp(server);
+    }
+    // Only re-run when entering the section or the server list changes —
+    // not on every mcpStatus update, or a fresh "connecting" write would
+    // immediately re-trigger this loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, settings.mcpServers]);
+
+  async function removeMcpServer(server: McpServerConfig) {
+    const ok = await confirm({
+      title: `Remove MCP server "${server.name}"?`,
+      description: "This can't be undone.",
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
+    if (server.enabled) void disconnectMcpServer(server.id);
+    onChange({ mcpServers: settings.mcpServers.filter((s) => s.id !== server.id) });
+    setMcpStatus((s) => {
+      const next = { ...s };
+      delete next[server.id];
+      return next;
+    });
+  }
+
+  function addMcpServer() {
+    const name = newMcpServer.name.trim();
+    const parts = newMcpServer.commandLine.trim().split(/\s+/).filter(Boolean);
+    if (!name || parts.length === 0) return;
+    const [command, ...args] = parts;
+    const env: Record<string, string> = {};
+    for (const line of newMcpServer.envText.split("\n")) {
+      const idx = line.indexOf("=");
+      if (idx <= 0) continue;
+      env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+    }
+    const server: McpServerConfig = { id: crypto.randomUUID(), name, command, args, env, enabled: true };
+    onChange({ mcpServers: [...settings.mcpServers, server] });
+    void connectMcp(server);
+    setNewMcpServer({ name: "", commandLine: "", envText: "" });
+    setAddMcpOpen(false);
+  }
+
   const [installedLocalModels, setInstalledLocalModels] = useState<string[] | null>(null);
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [ollamaUnreachable, setOllamaUnreachable] = useState(false);
   const [pullingModels, setPullingModels] = useState<
     Record<string, { status: string; pct: number | null }>
   >({});
+  const [modelSearch, setModelSearch] = useState("");
 
   useEffect(() => {
     if (section !== "models") return;
@@ -338,6 +462,7 @@ export function SettingsPage({
   }
 
   async function removeLocalModel(m: LocalModelDef) {
+    if (deletingModelId) return;
     const ok = await confirm({
       title: `Delete "${m.name}" from disk?`,
       description: "This can't be undone.",
@@ -345,6 +470,7 @@ export function SettingsPage({
       danger: true,
     });
     if (!ok) return;
+    setDeletingModelId(m.id);
     try {
       await deleteOllamaModel(m.id);
       setInstalledLocalModels((prev) => (prev ?? []).filter((n) => n !== m.id));
@@ -352,6 +478,8 @@ export function SettingsPage({
       if (provider) removeProvider(provider.id);
     } catch (err) {
       console.error("Ollama delete failed:", err);
+    } finally {
+      setDeletingModelId(null);
     }
   }
 
@@ -386,54 +514,62 @@ export function SettingsPage({
 
   return (
     <div className="flex h-full overflow-hidden bg-background text-foreground">
-      <aside className="w-[220px] shrink-0 border-r border-border bg-background-secondary flex flex-col">
-        <div className="h-11 flex items-center px-3 shrink-0">
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex items-center gap-1.5 text-[13px] text-foreground-secondary hover:text-foreground transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Back
-          </button>
-        </div>
-        <nav className="px-2 py-2 overflow-y-auto">
-          {SECTION_GROUPS.map((group) => (
-            <div key={group.label} className="mb-3 last:mb-0">
-              <div className="px-2 mb-1 text-[11px] font-medium text-foreground-muted uppercase tracking-wide">
-                {group.label}
+      <div
+        className="shrink-0 overflow-hidden"
+        style={{
+          width: sidebarOpen ? 220 : 0,
+          transition: "width 220ms cubic-bezier(0.4, 0, 0.2, 1)",
+        }}
+      >
+        <aside className="w-[220px] h-full border-r border-border bg-background-secondary flex flex-col">
+          <div className="h-11 flex items-center px-3 shrink-0">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex items-center gap-1.5 text-[13px] text-foreground-secondary hover:text-foreground transition-colors"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Back
+            </button>
+          </div>
+          <nav className="px-2 py-2 overflow-y-auto">
+            {SECTION_GROUPS.map((group) => (
+              <div key={group.label} className="mb-3 last:mb-0">
+                <div className="px-2 mb-1 text-[11px] font-medium text-foreground-muted uppercase tracking-wide">
+                  {group.label}
+                </div>
+                <div className="space-y-0.5">
+                  {group.items.map((s) => {
+                    const Icon = s.icon;
+                    const active = section === s.id;
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setSection(s.id)}
+                        className={`flex items-center gap-2.5 w-full h-8 px-2 rounded-md text-[13px] transition-colors text-left ${
+                          active
+                            ? "bg-background-tertiary text-foreground"
+                            : "text-foreground-secondary hover:bg-background-tertiary/60 hover:text-foreground"
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                        {s.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="space-y-0.5">
-                {group.items.map((s) => {
-                  const Icon = s.icon;
-                  const active = section === s.id;
-                  return (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => setSection(s.id)}
-                      className={`flex items-center gap-2.5 w-full h-8 px-2 rounded-md text-[13px] transition-colors text-left ${
-                        active
-                          ? "bg-background-tertiary text-foreground"
-                          : "text-foreground-secondary hover:bg-background-tertiary/60 hover:text-foreground"
-                      }`}
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                      {s.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </nav>
-      </aside>
+            ))}
+          </nav>
+        </aside>
+      </div>
 
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-xl mx-auto px-8 py-10">
           {section === "general" && (
             <div>
-              <h1 className="text-[18px] font-medium mb-6">General</h1>
+              <h1 className="text-[18px] font-bold mb-6">General</h1>
 
               <Card>
                 <CardRow
@@ -474,6 +610,34 @@ export function SettingsPage({
                     </button>
                   </CardRow>
                 )}
+              </Card>
+
+              <SectionLabel>Updates</SectionLabel>
+              <Card>
+                <CardRow
+                  label={appVersion ? `Rofiant Desktop v${appVersion}` : "Rofiant Desktop"}
+                  description={
+                    updateStatus === "checking"
+                      ? "Checking for updates…"
+                      : updateStatus === "latest"
+                        ? "You're on the latest version."
+                        : updateStatus === "available"
+                          ? "An update is available — see the banner above to install."
+                          : updateStatus === "error"
+                            ? "Couldn't check for updates. Try again later."
+                            : "Check if a newer version is available"
+                  }
+                >
+                  <button
+                    type="button"
+                    onClick={handleCheckForUpdate}
+                    disabled={updateStatus === "checking"}
+                    className="flex items-center gap-1.5 h-7 px-3 rounded-md border border-border text-[12px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors disabled:opacity-60 disabled:cursor-not-allowed shrink-0"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${updateStatus === "checking" ? "animate-spin" : ""}`} />
+                    {updateStatus === "checking" ? "Checking…" : "Check for updates"}
+                  </button>
+                </CardRow>
               </Card>
 
               <SectionLabel>Custom instructions</SectionLabel>
@@ -561,7 +725,7 @@ export function SettingsPage({
             <div>
               <div className="flex items-start justify-between gap-4 mb-6">
                 <div>
-                  <h1 className="text-[18px] font-medium mb-2">Providers</h1>
+                  <h1 className="text-[18px] font-bold mb-2">Providers</h1>
                   <p className="text-[13px] text-foreground-muted">
                     Connect your own AI provider using an OpenAI-compatible API (OpenAI, OpenRouter,
                     Together, a local Ollama server, etc). Your API key is sent directly to that
@@ -721,9 +885,159 @@ export function SettingsPage({
             </div>
           )}
 
+          {section === "mcp" && (
+            <div>
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h1 className="text-[18px] font-bold mb-2">MCP Servers</h1>
+                  <p className="text-[13px] text-foreground-muted">
+                    Connect Model Context Protocol servers to give the assistant more tools (a
+                    filesystem, database, or Git server, etc). Each one runs locally as a command
+                    you provide — never touches Rofiant's servers.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAddMcpOpen(true)}
+                  className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition-opacity shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add server
+                </button>
+              </div>
+
+              {settings.mcpServers.length === 0 ? (
+                <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6">
+                  <Cable className="w-5 h-5 text-foreground-muted mb-2" />
+                  <div className="text-[13px] text-foreground-secondary">No MCP servers yet</div>
+                  <div className="text-[12px] text-foreground-muted mt-0.5">
+                    Add one to give the assistant extra tools.
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1.5 mb-6">
+                  {settings.mcpServers.map((server) => {
+                    const status = mcpStatus[server.id] ?? { status: "idle" as const };
+                    return (
+                      <div
+                        key={server.id}
+                        className="w-full rounded-lg border border-border px-3 py-2.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-sm text-foreground font-medium truncate">
+                                {server.name}
+                              </span>
+                              {server.enabled && status.status === "connecting" && (
+                                <Loader2 className="w-3 h-3 text-foreground-muted animate-spin shrink-0" />
+                              )}
+                              {server.enabled && status.status === "connected" && (
+                                <span className="flex items-center gap-1 text-[11px] text-accent-success shrink-0">
+                                  <CircleCheck className="w-3 h-3" />
+                                  {status.tools.length} tool{status.tools.length === 1 ? "" : "s"}
+                                </span>
+                              )}
+                              {server.enabled && status.status === "error" && (
+                                <span
+                                  title={status.error}
+                                  className="flex items-center gap-1 text-[11px] text-red-500 shrink-0"
+                                >
+                                  <CircleAlert className="w-3 h-3" />
+                                  Failed to connect
+                                </span>
+                              )}
+                            </div>
+                            <span className="block text-xs text-foreground-muted truncate">
+                              {server.command} {server.args.join(" ")}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <Toggle checked={server.enabled} onChange={() => toggleMcpServer(server)} />
+                            <button
+                              type="button"
+                              onClick={() => removeMcpServer(server)}
+                              title="Remove server"
+                              className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {addMcpOpen && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 animate-[fadeIn_150ms_ease-out]"
+                  onClick={() => setAddMcpOpen(false)}
+                >
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full max-w-sm rounded-lg border border-border bg-background shadow-xl p-4 space-y-2.5 animate-[modalIn_180ms_ease-out]"
+                  >
+                    <div className="flex items-center justify-between mb-0.5">
+                      <div className="text-[13px] font-medium text-foreground">Add MCP server</div>
+                      <button
+                        type="button"
+                        onClick={() => setAddMcpOpen(false)}
+                        title="Close"
+                        className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <input
+                      autoFocus
+                      value={newMcpServer.name}
+                      onChange={(e) => setNewMcpServer((s) => ({ ...s, name: e.target.value }))}
+                      placeholder="Name (e.g. Filesystem)"
+                      className="w-full h-8 px-2.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light"
+                    />
+                    <input
+                      value={newMcpServer.commandLine}
+                      onChange={(e) => setNewMcpServer((s) => ({ ...s, commandLine: e.target.value }))}
+                      placeholder="Command (e.g. npx -y @modelcontextprotocol/server-filesystem ~/Desktop)"
+                      className="w-full h-8 px-2.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light"
+                    />
+                    <textarea
+                      value={newMcpServer.envText}
+                      onChange={(e) => setNewMcpServer((s) => ({ ...s, envText: e.target.value }))}
+                      placeholder={"Environment variables, one per line (optional)\nKEY=value"}
+                      rows={3}
+                      className="w-full px-2.5 py-1.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light resize-none"
+                    />
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setAddMcpOpen(false)}
+                        className="h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={addMcpServer}
+                        disabled={!newMcpServer.name.trim() || !newMcpServer.commandLine.trim()}
+                        className="h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                      >
+                        Add server
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {section === "models" && (
             <div>
-              <h1 className="text-[18px] font-medium mb-2">Models</h1>
+              <h1 className="text-[18px] font-bold mb-2">Models</h1>
               <p className="text-[13px] text-foreground-muted mb-6">
                 Download small open models to run locally through{" "}
                 <button
@@ -746,8 +1060,46 @@ export function SettingsPage({
                 </div>
               )}
 
+              <div className="relative mb-3">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground-muted" />
+                <input
+                  type="text"
+                  value={modelSearch}
+                  onChange={(e) => setModelSearch(e.target.value)}
+                  placeholder="Search models…"
+                  className="w-full h-8 pl-8 pr-8 rounded-lg border border-border bg-background-secondary text-[13px] text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                />
+                {modelSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setModelSearch("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-4 h-4 text-foreground-muted hover:text-foreground"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {(() => {
+                const q = modelSearch.trim().toLowerCase();
+                const filtered = q
+                  ? EASY_LOCAL_MODELS.filter(
+                      (m) =>
+                        m.name.toLowerCase().includes(q) ||
+                        m.id.toLowerCase().includes(q) ||
+                        m.desc.toLowerCase().includes(q),
+                    )
+                  : EASY_LOCAL_MODELS;
+                if (filtered.length === 0) {
+                  return (
+                    <div className="text-center text-[13px] text-foreground-muted py-8">
+                      No models match "{modelSearch}"
+                    </div>
+                  );
+                }
+                return (
               <div className="space-y-1.5">
-                {EASY_LOCAL_MODELS.map((m) => {
+                {filtered.map((m) => {
                   const installed = installedLocalModels?.includes(m.id) ?? false;
                   const localProvider = findLocalProvider(m);
                   const active = localProvider ? customModelId(localProvider.id) === settings.model : false;
@@ -786,10 +1138,15 @@ export function SettingsPage({
                             <button
                               type="button"
                               onClick={() => void removeLocalModel(m)}
+                              disabled={deletingModelId !== null}
                               title="Delete from disk"
-                              className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-500/10 transition-colors shrink-0"
+                              className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-500/10 transition-colors shrink-0 disabled:opacity-50 disabled:pointer-events-none"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              {deletingModelId === m.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
                             </button>
                           </>
                         ) : (
@@ -808,6 +1165,8 @@ export function SettingsPage({
                   );
                 })}
               </div>
+                );
+              })()}
             </div>
           )}
 
@@ -815,10 +1174,10 @@ export function SettingsPage({
             <div>
               <div className="flex items-start justify-between gap-4 mb-6">
                 <div>
-                  <h1 className="text-[18px] font-medium mb-2">Agents</h1>
+                  <h1 className="text-[18px] font-bold mb-2">Agents</h1>
                   <p className="text-[13px] text-foreground-muted">
-                    Save custom system prompts as agents and switch between them from the composer
-                    (next to the model picker) without retyping instructions each time.
+                    Save custom system prompts as agents and switch between them without retyping
+                    instructions each time.
                   </p>
                 </div>
                 <button
@@ -1016,7 +1375,7 @@ export function SettingsPage({
 
           {section === "profile" && (
             <div>
-              <h1 className="text-[18px] font-medium mb-6">Account</h1>
+              <h1 className="text-[18px] font-bold mb-6">Profile</h1>
               {userEmail ? (
                 <div className="rounded-lg border border-border px-3 py-3">
                   <div className="flex items-center justify-between gap-3">
@@ -1077,7 +1436,7 @@ export function SettingsPage({
 
           {section === "shortcuts" && (
             <div>
-              <h1 className="text-[18px] font-medium mb-2">Shortcuts</h1>
+              <h1 className="text-[18px] font-bold mb-2">Shortcuts</h1>
               <p className="text-[13px] text-foreground-muted mb-6">
                 ⌘ is Ctrl on Windows/Linux.
               </p>
@@ -1199,6 +1558,35 @@ export function SettingsPage({
                   Clear
                 </button>
               </Row>
+            </div>
+          )}
+
+          {section === "telemetry" && (
+            <div>
+              <h1 className="text-[18px] font-medium mb-6">Telemetry</h1>
+              <Row
+                label="Share anonymous usage data"
+                description="Helps us understand which features are used and fix bugs faster. On by default — turn off any time and no more data is sent."
+              >
+                <Toggle
+                  checked={settings.telemetryEnabled}
+                  onChange={(v) => onChange({ telemetryEnabled: v })}
+                />
+              </Row>
+              <div className="mt-4 text-[12px] text-foreground-muted leading-relaxed">
+                <div className="font-medium text-foreground-secondary mb-1">What's sent</div>
+                <ul className="list-disc list-inside space-y-0.5">
+                  <li>App events: launches, new chats, messages sent, model changes</li>
+                  <li>A random device ID (not tied to your name or email)</li>
+                  <li>App version and OS</li>
+                </ul>
+                <div className="font-medium text-foreground-secondary mt-3 mb-1">What's never sent</div>
+                <ul className="list-disc list-inside space-y-0.5">
+                  <li>Conversation content or message text</li>
+                  <li>API keys or provider credentials</li>
+                  <li>File contents or file paths</li>
+                </ul>
+              </div>
             </div>
           )}
         </div>

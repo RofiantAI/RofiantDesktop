@@ -28,10 +28,11 @@ export function ChatPanel({
   accessToken: string | null;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastMessageContent = conversation?.messages.at(-1)?.content;
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [conversation?.messages.length, conversation?.messages.at(-1)?.content]);
+  }, [conversation?.messages.length, lastMessageContent]);
 
   if (!conversation) {
     return (
@@ -69,10 +70,10 @@ export function ChatPanel({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className={`max-w-[720px] mx-auto px-6 py-8 ${spacing} ${textSize}`}>
           {conversation.messages.map((m, i) => (
-            <div key={m.id} className="group">
+            <div key={m.id} className="group min-w-0">
               {m.role === "assistant" &&
                 isStreaming &&
                 i === conversation.messages.length - 1 && (

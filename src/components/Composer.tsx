@@ -13,8 +13,9 @@ import {
   ListChecks,
   MessageCircle,
   Bot,
+  TriangleAlert,
 } from "lucide-react";
-import { ALL_MODELS, isProModel, isVisionModel, VISION_MODEL_ID } from "../lib/models";
+import { ALL_MODELS, isLogfareModel, isProModel, isVisionModel, VISION_MODEL_ID } from "../lib/models";
 import { customModelId, type CustomProvider } from "../lib/providers";
 import { readImageFile } from "../lib/image";
 import { SLASH_COMMANDS } from "../lib/commands";
@@ -66,6 +67,7 @@ export function Composer({
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [logfareTooltipRect, setLogfareTooltipRect] = useState<DOMRect | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
   const modeRef = useRef<HTMLDivElement>(null);
@@ -101,6 +103,10 @@ export function Composer({
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
+  }, [modelOpen]);
+
+  useEffect(() => {
+    if (!modelOpen) setLogfareTooltipRect(null);
   }, [modelOpen]);
 
   useEffect(() => {
@@ -393,7 +399,7 @@ export function Composer({
               <ChevronDown className="w-3 h-3" />
             </button>
             {modeOpen && (
-              <div className="absolute bottom-full left-0 mb-2 w-56 rounded-lg border border-border bg-card shadow-lg py-1 z-10">
+              <div className="absolute bottom-full left-0 mb-2 w-56 rounded-lg border border-border bg-[#181818] shadow-lg py-1 px-0.5 z-10">
                 <button
                   type="button"
                   onClick={() => {
@@ -401,13 +407,13 @@ export function Composer({
                     onAgentChange(null);
                     setModeOpen(false);
                   }}
-                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary"
+                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-0.5 text-left transition-colors hover:bg-background-tertiary rounded-md"
                 >
                   <span className="flex items-center gap-2">
                     <MessageCircle className="w-3.5 h-3.5 text-foreground-muted" />
                     <span>
-                      <span className="block text-[13px] text-foreground font-medium">Ask</span>
-                      <span className="block text-[11px] text-foreground-muted">Normal chat</span>
+                      <span className="block text-[13px] text-foreground font-medium leading-tight">Ask</span>
+                      <span className="block text-[11px] text-foreground-muted leading-tight">Normal chat</span>
                     </span>
                   </span>
                   {mode === "ask" && !activeAgent && (
@@ -421,13 +427,13 @@ export function Composer({
                     onAgentChange(null);
                     setModeOpen(false);
                   }}
-                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary"
+                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-0.5 text-left transition-colors hover:bg-background-tertiary rounded-md"
                 >
                   <span className="flex items-center gap-2">
                     <ListChecks className="w-3.5 h-3.5 text-foreground-muted" />
                     <span>
-                      <span className="block text-[13px] text-foreground font-medium">Plan</span>
-                      <span className="block text-[11px] text-foreground-muted">
+                      <span className="block text-[13px] text-foreground font-medium leading-tight">Plan</span>
+                      <span className="block text-[11px] text-foreground-muted leading-tight">
                         Outline steps before acting
                       </span>
                     </span>
@@ -480,7 +486,7 @@ export function Composer({
               <ChevronDown className="w-3 h-3" />
             </button>
             {modelOpen && (
-              <div className="absolute bottom-full left-0 mb-2 w-64 rounded-lg border border-border bg-card shadow-lg py-1 z-10">
+              <div className="absolute bottom-full left-0 mb-2 w-64 max-h-[70vh] overflow-y-auto rounded-lg border border-border bg-card shadow-lg py-1 z-10">
                 {customProviders.length > 0 && (
                   <div className="max-h-40 overflow-y-auto">
                     {customProviders.map((p) => {
@@ -531,6 +537,17 @@ export function Composer({
                               Pro
                             </span>
                           )}
+                          {isLogfareModel(m.id) && (
+                            <span
+                              title="Free community-run inference — uptime isn't guaranteed and requests may fail"
+                              onMouseEnter={(e) => setLogfareTooltipRect(e.currentTarget.getBoundingClientRect())}
+                              onMouseLeave={() => setLogfareTooltipRect(null)}
+                              className="flex items-center gap-0.5 text-[10px] font-medium text-accent-warning bg-accent-warning/10 border border-accent-warning/30 rounded px-1 py-0.5"
+                            >
+                              <TriangleAlert className="w-2.5 h-2.5" />
+                              Unstable
+                            </span>
+                          )}
                         </span>
                         <span className="block text-[11px] text-foreground-muted">{m.desc}</span>
                       </span>
@@ -540,6 +557,21 @@ export function Composer({
                     </button>
                   );
                 })}
+              </div>
+            )}
+            {logfareTooltipRect && (
+              <div
+                role="tooltip"
+                style={{
+                  position: "fixed",
+                  top: logfareTooltipRect.top - 8,
+                  left: logfareTooltipRect.left + logfareTooltipRect.width / 2,
+                  transform: "translate(-50%, -100%)",
+                }}
+                className="z-50 w-56 pointer-events-none rounded-md border border-border bg-card px-2.5 py-1.5 text-[11px] font-normal normal-case leading-snug text-foreground-secondary shadow-lg"
+              >
+                Free, community-run inference with no uptime guarantee — this model can be slow,
+                rate-limited, or fail outright.
               </div>
             )}
           </div>

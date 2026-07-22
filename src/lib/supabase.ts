@@ -9,5 +9,10 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false,
+    // PKCE (not the default "implicit" flow) so the OAuth redirect carries a
+    // `?code=` we exchange manually — needed because the redirect lands on a
+    // custom rofiant:// scheme via the deep-link plugin, not a URL Supabase's
+    // implicit flow can parse from window.location.
+    flowType: "pkce",
   },
 });

@@ -5,9 +5,13 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::watch;
+
+mod mcp;
 
 const CANCELLED: &str = "__cancelled__";
 
@@ -75,6 +79,38 @@ struct FileChangePayload {
 }
 
 const GROQ_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/groq-proxy";
+const LOGFARE_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/logfare-proxy";
+
+// reqwest::Client::new() has no timeout by default, so a dead network (e.g.
+// offline, DNS black hole) hangs the request forever with no way for the
+// user to recover short of restarting the app. connect_timeout fails fast
+// when the host is unreachable; the longer overall `timeout` bounds normal
+// bounded requests. ollama_pull_model is excluded from the overall timeout
+// since a model download can legitimately run far longer than that.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .expect("failed to build reqwest client")
+}
+
+fn streaming_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .expect("failed to build reqwest client")
+}
+
+// Mirrors the Logfare entries in src/lib/models.ts — kept in sync manually
+// since the frontend and this backend live in separate build/deploy
+// pipelines (same note as PRO_MODEL_IDS in supabase/functions/groq-proxy).
+fn model_uses_logfare(model: &str) -> bool {
+    model == "kiro-auto"
+}
 const GROQ_TRANSCRIBE_PROXY_URL: &str =
     "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/groq-transcribe-proxy";
 const TRANSCRIBE_MODEL: &str = "whisper-large-v3-turbo";
@@ -114,31 +150,128 @@ fn resolve_path(path: &str) -> PathBuf {
     }
 }
 
-fn tool_list_directory(path: &str) -> String {
+// Noise directories skipped by recursive listing — dependency trees and build
+// output that would otherwise drown out the actual project files.
+const IGNORED_DIR_NAMES: &[&str] = &[
+    ".git", "node_modules", "target", "dist", "build", ".venv", "venv", "__pycache__", ".next",
+    ".cache",
+];
+
+fn tool_list_directory(path: &str, recursive: bool) -> String {
     let dir = resolve_path(path);
-    match std::fs::read_dir(&dir) {
-        Ok(entries) => {
-            let mut items: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                    if is_dir {
-                        format!("{name}/")
-                    } else {
-                        name
-                    }
-                })
-                .collect();
-            items.sort();
-            if items.is_empty() {
-                "(empty directory)".to_string()
+    if !recursive {
+        return match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                let mut items: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                        if is_dir {
+                            format!("{name}/")
+                        } else {
+                            name
+                        }
+                    })
+                    .collect();
+                items.sort();
+                if items.is_empty() {
+                    "(empty directory)".to_string()
+                } else {
+                    items.join("\n")
+                }
+            }
+            Err(e) => format!("Error reading directory {}: {}", dir.display(), e),
+        };
+    }
+
+    const MAX_ENTRIES: usize = 500;
+    let mut items: Vec<String> = Vec::new();
+    let mut stack = vec![dir.clone()];
+    let mut truncated = false;
+    while let Some(current) = stack.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            if items.len() >= MAX_ENTRIES {
+                truncated = true;
+                break;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if IGNORED_DIR_NAMES.contains(&name.as_str()) {
+                continue;
+            }
+            let full = entry.path();
+            let rel = full.strip_prefix(&dir).unwrap_or(&full).display().to_string();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                items.push(format!("{rel}/"));
+                stack.push(full);
             } else {
-                items.join("\n")
+                items.push(rel);
             }
         }
-        Err(e) => format!("Error reading directory {}: {}", dir.display(), e),
     }
+    if items.is_empty() {
+        return "(empty directory)".to_string();
+    }
+    items.sort();
+    if truncated {
+        items.push(format!(
+            "... (truncated at {MAX_ENTRIES} entries; narrow the path or search a subdirectory)"
+        ));
+    }
+    items.join("\n")
+}
+
+fn tool_edit_file(
+    path: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> Result<(String, String, String), String> {
+    let file = resolve_path(path);
+    let old_content = std::fs::read_to_string(&file)
+        .map_err(|e| format!("Error reading file {}: {}", file.display(), e))?;
+
+    if old_string.is_empty() {
+        return Err("old_string must not be empty.".to_string());
+    }
+
+    let occurrences = old_content.matches(old_string).count();
+    if occurrences == 0 {
+        return Err(format!(
+            "old_string not found in {}. Read the file first and copy the exact text \
+(including whitespace) you want to replace.",
+            file.display()
+        ));
+    }
+    if occurrences > 1 && !replace_all {
+        return Err(format!(
+            "old_string appears {occurrences} times in {}. Include more surrounding context to \
+make it unique, or set replace_all to true.",
+            file.display()
+        ));
+    }
+
+    let new_content = if replace_all {
+        old_content.replace(old_string, new_string)
+    } else {
+        old_content.replacen(old_string, new_string, 1)
+    };
+
+    std::fs::write(&file, &new_content)
+        .map_err(|e| format!("Error writing file {}: {}", file.display(), e))?;
+
+    let replaced = if replace_all { occurrences } else { 1 };
+    let message = format!(
+        "Replaced {replaced} occurrence{} in {}",
+        if replaced == 1 { "" } else { "s" },
+        file.display()
+    );
+    Ok((message, old_content, new_content))
 }
 
 fn tool_read_file(path: &str) -> String {
@@ -384,6 +517,10 @@ fn tools_schema() -> Value {
                         "path": {
                             "type": "string",
                             "description": "Absolute path, or a path relative to the home directory (e.g. 'Desktop', '~/Documents')."
+                        },
+                        "recursive": {
+                            "type": "boolean",
+                            "description": "List the whole subtree instead of just the top level. Use this to get oriented in a project before reading files. Skips .git, node_modules, target, dist, build, venv, __pycache__, .next, .cache. Defaults to false."
                         }
                     },
                     "required": ["path"]
@@ -425,6 +562,35 @@ fn tools_schema() -> Value {
                         }
                     },
                     "required": ["path", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": "Make a precise, targeted edit to an existing text file by replacing one exact snippet with another, instead of rewriting the whole file. Prefer this over write_file when changing part of a file that already exists — read_file it first so old_string matches the file's exact text (including whitespace and indentation). old_string must appear exactly once in the file unless replace_all is set.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute path, or a path relative to the home directory."
+                        },
+                        "old_string": {
+                            "type": "string",
+                            "description": "The exact existing text to replace. Include enough surrounding context to make it uniquely identify one location in the file."
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "The text to replace old_string with."
+                        },
+                        "replace_all": {
+                            "type": "boolean",
+                            "description": "Replace every occurrence of old_string instead of requiring exactly one match. Defaults to false."
+                        }
+                    },
+                    "required": ["path", "old_string", "new_string"]
                 }
             }
         },
@@ -545,7 +711,7 @@ fn system_prompt() -> String {
     let home = home_dir();
     format!(
         "You are Rofiant, an AI assistant with real, direct access to the user's computer through \
-tools: list_directory, read_file, write_file, run_command, get_clipboard, set_clipboard, \
+tools: list_directory, read_file, write_file, edit_file, run_command, get_clipboard, set_clipboard, \
 take_screenshot, list_processes, kill_process, open_app, and send_notification. These are not \
 simulations — they execute for real on the user's machine. The user's home directory is exactly \
 `{home}`. Use paths relative to it (e.g. 'Desktop/notes.txt') or prefixed with '~/' — never guess \
@@ -556,7 +722,16 @@ when you need to see what's currently on screen. Use tools proactively whenever 
 answer a request. Never claim you lack access to the file system, the terminal, the clipboard, \
 running processes, or the screen — you have it. Act like a normal, capable assistant: just do the \
 task. Only pause to ask before something destructive or irreversible (deleting data, killing an \
-important process, overwriting something important, anything that can't be undone). Format replies \
+important process, overwriting something important, anything that can't be undone). \
+\n\nWhen coding: to get oriented in a project, list_directory with recursive true before reading \
+files one by one — don't rely on the user to describe the layout. For run_command, `grep -rn` (or \
+`findstr /s` on Windows) works for searching file contents by keyword or symbol name. When changing \
+an existing file, always prefer edit_file over write_file — read_file it first, then replace only \
+the exact snippet that needs to change; reserve write_file for brand-new files or a genuine full \
+rewrite, since re-sending an entire large file for a small change is slow and risks losing content \
+the model didn't mean to touch. After editing code, if the project has an obvious way to check the \
+change (a type checker, test suite, linter, build command), run it with run_command before calling \
+the task done, and fix what it reports. Format replies \
 in plain Markdown: real spaces, never HTML entities like &nbsp;; fenced ``` code blocks for file \
 listings, command output, or code, not single backticks. Skip decorative emoji unless the user uses \
 them first. Call tools only through the real tool-calling mechanism — never type out tool-call \
@@ -621,10 +796,28 @@ fn stop_chat(cancellations: State<'_, ChatCancellations>, request_id: String) ->
     Ok(())
 }
 
-/// Some weaker models (especially small local ones served through Ollama)
-/// don't reliably emit structured tool_calls and instead leak their
-/// internal pseudo tool-call notation (e.g. `<function=name>{...}</function>`)
-/// as plain reply text. Strip it defensively so it never reaches the UI.
+/// Tool names the model can call — used to recognize leaked pseudo tool-call
+/// notation even when the model drops the `<function=` wrapper around it.
+const TOOL_NAMES: &[&str] = &[
+    "list_directory",
+    "read_file",
+    "write_file",
+    "run_command",
+    "get_clipboard",
+    "set_clipboard",
+    "take_screenshot",
+    "list_processes",
+    "kill_process",
+    "open_app",
+    "send_notification",
+];
+
+/// Some weaker models (especially small local ones served through Ollama, or
+/// Groq's gpt-oss under load) don't reliably emit structured tool_calls and
+/// instead leak their internal pseudo tool-call notation as plain reply
+/// text — either `<function=name>{...}</function>` or, less consistently,
+/// a bare `name>{...}</function>` with the opening tag dropped entirely.
+/// Strip both defensively so neither ever reaches the UI.
 fn strip_leaked_tool_syntax(text: &str) -> String {
     const OPEN: &str = "<function=";
     const CLOSE: &str = "</function>";
@@ -632,25 +825,115 @@ fn strip_leaked_tool_syntax(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut rest = text;
     loop {
-        match rest.find(OPEN) {
-            Some(start) => {
-                result.push_str(&rest[..start]);
-                let after_open = &rest[start..];
-                match after_open.find(CLOSE) {
-                    Some(end_rel) => rest = &after_open[end_rel + CLOSE.len()..],
-                    None => {
-                        // Unterminated tag: drop the remainder defensively.
-                        rest = "";
-                    }
-                }
-            }
+        let close_pos = match rest.find(CLOSE) {
+            Some(p) => p,
             None => {
                 result.push_str(rest);
                 break;
             }
+        };
+
+        let head = &rest[..close_pos];
+        let mut start = head.rfind(OPEN);
+        for name in TOOL_NAMES {
+            let marker = format!("{name}>{{");
+            if let Some(pos) = head.rfind(&marker) {
+                start = Some(start.map_or(pos, |s| s.max(pos)));
+            }
         }
+
+        match start {
+            Some(start) => result.push_str(&head[..start]),
+            // No recognizable opening; drop just the stray closing tag.
+            None => result.push_str(head),
+        }
+        rest = &rest[close_pos + CLOSE.len()..];
     }
     result
+}
+
+/// Weaker local models (e.g. Ollama-served Qwen 2.5 Coder) sometimes skip the
+/// structured tool_calls response entirely and instead write out one or more
+/// well-formed `{"name": ..., "arguments": {...}}` JSON objects as the reply
+/// text. Unlike the other two leak formats below, this one parses cleanly,
+/// so rather than just hiding it, treat it as the tool_calls the model meant
+/// to make and actually run them. Requires the ENTIRE trimmed reply to be
+/// nothing but these objects (not just JSON appearing somewhere in prose) to
+/// keep false positives on normal replies near zero.
+fn parse_leaked_tool_calls(text: &str) -> Option<Vec<Value>> {
+    let mut calls = Vec::new();
+    let mut rest = text.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    while !rest.is_empty() {
+        if !rest.starts_with('{') {
+            return None;
+        }
+        let bytes = rest.as_bytes();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut end = None;
+        for (i, &b) in bytes.iter().enumerate() {
+            if in_string {
+                if escape {
+                    escape = false;
+                } else if b == b'\\' {
+                    escape = true;
+                } else if b == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match b {
+                b'"' => in_string = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end?;
+        let value: Value = serde_json::from_str(&rest[..=end]).ok()?;
+        let name = value.get("name")?.as_str()?.to_string();
+        let arguments = value.get("arguments")?.as_object()?.clone();
+        calls.push(json!({
+            "id": format!("leaked-{}", calls.len()),
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string()),
+            }
+        }));
+        rest = rest[end + 1..].trim_start();
+    }
+    Some(calls)
+}
+
+/// Qwen 3.6's tool-calling is documented as unreliable on Groq: instead of a
+/// real tool_calls response it sometimes emits a bare, unclosed pseudo
+/// function-call as reply text, e.g.:
+///   function=
+///   function=write_file>text="screenshot.png";path='~/Downloads'
+/// This has no `</function>` close tag so `strip_leaked_tool_syntax` above
+/// never sees it. The tool call itself never actually runs in this case —
+/// this only keeps the malformed notation out of the user-visible reply.
+fn strip_leaked_pseudo_tool_syntax(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed != "function=" && !(trimmed.starts_with("function=") && trimmed.contains('>'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 fn emit_text(app: &AppHandle, request_id: &str, text: impl Into<String>) {
@@ -673,12 +956,13 @@ async fn run_agent(
     provider: Option<ProviderConfig>,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let (url, auth_token): (String, &str) = match &provider {
         Some(p) => (
             format!("{}/chat/completions", p.base_url.trim_end_matches('/')),
             p.api_key.as_str(),
         ),
+        None if model_uses_logfare(model) => (LOGFARE_PROXY_URL.to_string(), access_token),
         None => (GROQ_PROXY_URL.to_string(), access_token),
     };
     // Some chat templates (notably several local models served through
@@ -698,16 +982,21 @@ async fn run_agent(
         }
     }
 
+    // Only the vision-capable model accepts image content (must match
+    // VISION_MODEL_ID in src/lib/models.ts) — sending it to any other model
+    // gets the whole request rejected with "content must be a string".
+    let model_supports_vision = model == "qwen/qwen3.6-27b";
+
     let mut convo: Vec<Value> = vec![json!({ "role": "system", "content": system_content })];
     convo.extend(rest.into_iter().map(|m| match m.image_data_url {
-        Some(url) => json!({
+        Some(url) if model_supports_vision => json!({
             "role": m.role,
             "content": [
                 { "type": "text", "text": m.content },
                 { "type": "image_url", "image_url": { "url": url } }
             ]
         }),
-        None => json!({ "role": m.role, "content": m.content }),
+        _ => json!({ "role": m.role, "content": m.content }),
     }));
 
     let mut total_input_tokens: u64 = 0;
@@ -716,6 +1005,13 @@ async fn run_agent(
     // function calling. Drop tools after the first such rejection and
     // retry the same step instead of burning a step on it.
     let mut include_tools = true;
+    // Some models (e.g. openai/gpt-oss-120b on Groq) occasionally emit a
+    // malformed tool call as raw text instead of a real tool_calls entry,
+    // which Groq rejects with 400 tool_use_failed. This is transient model
+    // generation noise, not a real request error, so retry a few times
+    // before giving up and surfacing it to the user.
+    let mut tool_use_failed_retries = 0;
+    const MAX_TOOL_USE_FAILED_RETRIES: u32 = 3;
 
     let mut step = 0;
     while step < MAX_AGENT_STEPS {
@@ -728,7 +1024,12 @@ async fn run_agent(
             "messages": convo,
         });
         if include_tools {
-            body["tools"] = tools_schema();
+            let mut tools = tools_schema();
+            let mcp_tools = mcp::tool_schemas(app.state::<mcp::McpState>().inner()).await;
+            if let Some(arr) = tools.as_array_mut() {
+                arr.extend(mcp_tools);
+            }
+            body["tools"] = tools;
             body["tool_choice"] = json!("auto");
         }
 
@@ -747,6 +1048,10 @@ async fn run_agent(
                 include_tools = false;
                 continue;
             }
+            if text.contains("tool_use_failed") && tool_use_failed_retries < MAX_TOOL_USE_FAILED_RETRIES {
+                tool_use_failed_retries += 1;
+                continue;
+            }
             return Err(format!("Provider API error ({status}): {text}"));
         }
 
@@ -758,11 +1063,20 @@ async fn run_agent(
         total_input_tokens += data["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
         total_output_tokens += data["usage"]["completion_tokens"].as_u64().unwrap_or(0);
 
-        let message = data["choices"][0]["message"].clone();
-        let tool_calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+        let mut message = data["choices"][0]["message"].clone();
+        let mut tool_calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+
+        let mut leaked_as_tool_calls = false;
+        if tool_calls.is_empty() {
+            if let Some(parsed) = parse_leaked_tool_calls(message["content"].as_str().unwrap_or("")) {
+                tool_calls = parsed;
+                leaked_as_tool_calls = true;
+            }
+        }
 
         if tool_calls.is_empty() {
             let text = strip_leaked_tool_syntax(message["content"].as_str().unwrap_or(""));
+            let text = strip_leaked_pseudo_tool_syntax(&text);
             emit_text(app, request_id, text);
             let _ = app.emit(
                 "chat-usage",
@@ -776,6 +1090,18 @@ async fn run_agent(
             return Ok(());
         }
 
+        // Assistant responses that only make tool calls come back with
+        // content: null. That's valid as a response, but replaying it back
+        // as history on the next request gets rejected by some providers
+        // ("content must be a string"), so normalize it before pushing.
+        // Leaked-JSON tool calls need the same treatment: drop the raw JSON
+        // text from history since the real tool_calls array replaces it.
+        if message["content"].is_null() || leaked_as_tool_calls {
+            message["content"] = json!("");
+        }
+        if leaked_as_tool_calls {
+            message["tool_calls"] = json!(tool_calls);
+        }
         convo.push(message);
 
         for call in &tool_calls {
@@ -790,6 +1116,7 @@ async fn run_agent(
                 "list_directory" => format!("@@tool:list_directory@@Listing `{path}`\n\n"),
                 "read_file" => format!("@@tool:read_file@@Reading `{path}`\n\n"),
                 "write_file" => format!("@@tool:write_file@@Writing `{path}`\n\n"),
+                "edit_file" => format!("@@tool:edit_file@@Editing `{path}`\n\n"),
                 "run_command" => format!("@@tool:run_command@@Running `{command}`\n\n"),
                 "get_clipboard" => "@@tool:get_clipboard@@Reading clipboard\n\n".to_string(),
                 "set_clipboard" => "@@tool:set_clipboard@@Setting clipboard\n\n".to_string(),
@@ -807,8 +1134,11 @@ async fn run_agent(
 
             let mut screenshot_data_url: Option<String> = None;
 
-            let result = match name {
-                "list_directory" => tool_list_directory(path),
+            let result = if mcp::is_mcp_tool(name) {
+                mcp::call_tool(app.state::<mcp::McpState>().inner(), name, args.clone()).await
+            } else {
+                match name {
+                "list_directory" => tool_list_directory(path, args["recursive"].as_bool().unwrap_or(false)),
                 "read_file" => tool_read_file(path),
                 "write_file" => {
                     let content = args["content"].as_str().unwrap_or("");
@@ -823,6 +1153,27 @@ async fn run_agent(
                                     path: resolved.display().to_string(),
                                     old_content,
                                     new_content: content.to_string(),
+                                },
+                            );
+                            message
+                        }
+                        Err(err) => err,
+                    }
+                }
+                "edit_file" => {
+                    let old_string = args["old_string"].as_str().unwrap_or("");
+                    let new_string = args["new_string"].as_str().unwrap_or("");
+                    let replace_all = args["replace_all"].as_bool().unwrap_or(false);
+                    let resolved = resolve_path(path);
+                    match tool_edit_file(path, old_string, new_string, replace_all) {
+                        Ok((message, old_content, new_content)) => {
+                            let _ = app.emit(
+                                "file-change",
+                                FileChangePayload {
+                                    conversation_id: conversation_id.to_string(),
+                                    path: resolved.display().to_string(),
+                                    old_content: Some(old_content),
+                                    new_content,
                                 },
                             );
                             message
@@ -861,6 +1212,7 @@ async fn run_agent(
                     }
                 }
                 other => format!("Unknown tool: {other}"),
+                }
             };
 
             convo.push(json!({
@@ -870,13 +1222,20 @@ async fn run_agent(
             }));
 
             if let Some(data_url) = screenshot_data_url {
-                convo.push(json!({
-                    "role": "user",
-                    "content": [
-                        { "type": "text", "text": "(screenshot attached above)" },
-                        { "type": "image_url", "image_url": { "url": data_url } }
-                    ]
-                }));
+                if model_supports_vision {
+                    convo.push(json!({
+                        "role": "user",
+                        "content": [
+                            { "type": "text", "text": "(screenshot attached above)" },
+                            { "type": "image_url", "image_url": { "url": data_url } }
+                        ]
+                    }));
+                } else {
+                    convo.push(json!({
+                        "role": "user",
+                        "content": "(screenshot captured; this model can't view images — switch to Qwen 3.6 27B to see it)",
+                    }));
+                }
             }
         }
 
@@ -888,7 +1247,7 @@ async fn run_agent(
 
 #[tauri::command]
 async fn generate_title(text: String, access_token: String) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let body = json!({
         "model": TITLE_MODEL,
         "messages": [
@@ -961,7 +1320,7 @@ async fn transcribe_audio(
         .part("file", part)
         .text("model", TRANSCRIBE_MODEL);
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = client
         .post(GROQ_TRANSCRIBE_PROXY_URL)
         .bearer_auth(access_token)
@@ -989,7 +1348,7 @@ const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 
 #[tauri::command]
 async fn ollama_list_models() -> Result<Vec<String>, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .get(format!("{OLLAMA_BASE_URL}/api/tags"))
         .send()
@@ -1015,7 +1374,7 @@ async fn ollama_list_models() -> Result<Vec<String>, String> {
 async fn ollama_pull_model(app: AppHandle, model: String) -> Result<(), String> {
     use futures_util::StreamExt;
 
-    let client = reqwest::Client::new();
+    let client = streaming_http_client();
     let resp = client
         .post(format!("{OLLAMA_BASE_URL}/api/pull"))
         .json(&json!({ "model": model, "stream": true }))
@@ -1071,7 +1430,7 @@ async fn ollama_pull_model(app: AppHandle, model: String) -> Result<(), String> 
 
 #[tauri::command]
 async fn ollama_delete_model(model: String) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .delete(format!("{OLLAMA_BASE_URL}/api/delete"))
         .json(&json!({ "model": model }))
@@ -1087,21 +1446,75 @@ async fn ollama_delete_model(model: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn mcp_connect(
+    state: State<'_, mcp::McpState>,
+    config: mcp::McpServerConfig,
+) -> Result<Vec<mcp::McpToolInfo>, String> {
+    mcp::connect(state.inner(), config).await
+}
+
+#[tauri::command]
+async fn mcp_disconnect(state: State<'_, mcp::McpState>, id: String) -> Result<(), String> {
+    mcp::disconnect(state.inner(), &id).await;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // WebKitGTK's DMA-BUF renderer produces blurry/pixelated output on many
+    // Linux Wayland setups (unlike Chromium-based apps). Must be set before
+    // GTK/WebKit initializes.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+
+    // Must be registered before the deep-link plugin: on Windows/Linux, when
+    // the OS "opens" our rofiant:// scheme while the app is already running,
+    // it launches a second process rather than routing to the first one. The
+    // "deep-link" feature on single-instance detects that and forwards the
+    // URL into the running instance's deep-link plugin instead.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}));
+    }
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(ChatCancellations::default())
+        .manage(mcp::McpState::default())
         .setup(|app| {
+            let mut log_targets = vec![Target::new(TargetKind::LogDir {
+                file_name: Some("rofiant".to_string()),
+            })];
             if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+                log_targets.push(Target::new(TargetKind::Stdout));
+            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .targets(log_targets)
+                    .max_file_size(5_000_000)
+                    .rotation_strategy(RotationStrategy::KeepOne)
+                    .build(),
+            )?;
+
+            // Only needed for unbundled dev builds on Windows/Linux, where the
+            // OS has no installer step to register the URL scheme handler.
+            // macOS reads it from Info.plist (via bundle config) and packaged
+            // Windows/Linux builds register it at install time.
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.deep_link().register_all()?;
             }
 
             #[cfg(any(
@@ -1130,7 +1543,9 @@ pub fn run() {
             transcribe_audio,
             ollama_list_models,
             ollama_pull_model,
-            ollama_delete_model
+            ollama_delete_model,
+            mcp_connect,
+            mcp_disconnect
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

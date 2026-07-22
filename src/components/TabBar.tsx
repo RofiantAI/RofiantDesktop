@@ -1,4 +1,4 @@
-import { X, Plus, PanelRight, MessageSquare, Rewind } from "lucide-react";
+import { X, Plus, PanelRight, MessageSquare, RotateCcw } from "lucide-react";
 import type { Conversation } from "../types";
 
 export function TabBar({
@@ -26,7 +26,7 @@ export function TabBar({
 }) {
   return (
     <div className="flex items-center h-11 shrink-0 border-b border-border bg-background pr-2">
-      {!sidebarOpen && (
+      {!sidebarOpen && tabs.length > 0 && (
         <button
           type="button"
           onClick={onNew}
@@ -40,24 +40,28 @@ export function TabBar({
         {tabs.map((t) => {
           const active = t.id === activeId;
           return (
-            <button
+            <div
               key={t.id}
-              type="button"
-              onClick={() => onSelect(t.id)}
               className={`group relative flex items-center gap-1.5 h-7 pl-2.5 pr-1.5 text-[13px] rounded-md max-w-[200px] shrink-0 transition-colors my-auto ${
                 active
                   ? "bg-background-tertiary text-foreground"
                   : "text-foreground-secondary hover:bg-background-tertiary/50 hover:text-foreground"
               }`}
             >
-              <MessageSquare className="w-3 h-3 shrink-0 text-foreground-muted" />
-              <span className="truncate">{t.title}</span>
-              {t.status === "running" && (
-                <span className="w-1.5 h-1.5 rounded-full bg-accent-primary animate-pulse shrink-0" />
-              )}
-              <span
-                role="button"
-                tabIndex={-1}
+              <button
+                type="button"
+                onClick={() => onSelect(t.id)}
+                className="flex items-center gap-1.5 min-w-0"
+              >
+                <MessageSquare className="w-3 h-3 shrink-0 text-foreground-muted" />
+                <span className="truncate">{t.title}</span>
+                {t.status === "running" && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent-primary animate-pulse shrink-0" />
+                )}
+              </button>
+              <button
+                type="button"
+                aria-label={`Close ${t.title}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   onClose(t.id);
@@ -65,14 +69,14 @@ export function TabBar({
                 className="shrink-0 opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-background-tertiary transition-opacity"
               >
                 <X className="w-3 h-3" />
-              </span>
-            </button>
+              </button>
+            </div>
           );
         })}
         <button
           type="button"
           onClick={onNew}
-          title="New agent tab"
+          title="New chat tab"
           className="flex items-center justify-center w-7 h-7 rounded-md shrink-0 text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -85,7 +89,7 @@ export function TabBar({
         title="Change history"
         className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
       >
-        <Rewind className="w-3.5 h-3.5" />
+        <RotateCcw className="w-3.5 h-3.5" />
       </button>
       <button
         type="button"

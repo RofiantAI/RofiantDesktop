@@ -42,7 +42,7 @@ export const MessageBubble = memo(function MessageBubble({
   if (message.role === "user") {
     return (
       <div>
-        <div className="rounded-xl border border-border bg-card px-4 py-3 text-foreground leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+        <div className="rounded-xl border border-border bg-card px-4 py-3 text-foreground leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.04)] break-words">
           {message.imageDataUrl && (
             <img
               src={message.imageDataUrl}
@@ -63,7 +63,7 @@ export const MessageBubble = memo(function MessageBubble({
   }
 
   return (
-    <div className="text-foreground leading-relaxed">
+    <div className="text-foreground leading-relaxed break-words">
       {message.content ? (
         <>
           <MarkdownLite text={message.content} />

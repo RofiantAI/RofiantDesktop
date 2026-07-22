@@ -40,7 +40,7 @@ function renderInline(text: string): ReactNode[] {
       return (
         <code
           key={i}
-          className="px-1.5 py-0.5 rounded bg-code-bg border border-code-border text-[0.85em] font-mono text-foreground"
+          className="px-1.5 py-0.5 rounded bg-code-bg border border-code-border text-[0.85em] font-mono text-foreground break-all"
         >
           {part.slice(1, -1)}
         </code>
@@ -60,7 +60,7 @@ export const MarkdownLite = memo(function MarkdownLite({ text }: { text: string 
     blocks.push(
       <ul key={key} className="list-disc pl-5 space-y-1 my-1.5">
         {listBuffer.map((item, i) => (
-          <li key={i} className="leading-relaxed">
+          <li key={i} className="leading-relaxed break-words">
             {renderInline(item)}
           </li>
         ))}
@@ -99,7 +99,7 @@ export const MarkdownLite = memo(function MarkdownLite({ text }: { text: string 
       flushList(`list-${i}`);
       const Icon = TOOL_ICONS[toolTag[1]] ?? Wrench;
       blocks.push(
-        <p key={i} className="leading-relaxed flex items-center gap-1.5">
+        <p key={i} className="leading-relaxed flex items-center gap-1.5 break-words min-w-0">
           <Icon className="w-3.5 h-3.5 text-foreground-muted shrink-0" />
           {renderInline(toolTag[2])}
         </p>,
@@ -127,7 +127,7 @@ export const MarkdownLite = memo(function MarkdownLite({ text }: { text: string 
             ? "text-base font-semibold mt-3 mb-1"
             : "text-sm font-semibold mt-2 mb-1";
       blocks.push(
-        <div key={i} className={className}>
+        <div key={i} className={`${className} break-words`}>
           {renderInline(heading[2])}
         </div>,
       );
@@ -142,7 +142,7 @@ export const MarkdownLite = memo(function MarkdownLite({ text }: { text: string 
     }
 
     blocks.push(
-      <p key={i} className="leading-relaxed">
+      <p key={i} className="leading-relaxed break-words">
         {renderInline(line)}
       </p>,
     );

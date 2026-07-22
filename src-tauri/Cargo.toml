@@ -28,9 +28,11 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["sync", "macros"] }
+tokio = { version = "1", features = ["sync", "macros", "process"] }
+rmcp = { version = "2", default-features = false, features = ["client", "transport-child-process"] }
 base64 = "0.22"
 tauri-plugin-opener = "2.5.4"
+tauri-plugin-deep-link = "2"
 arboard = "3"
 xcap = "0.0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -38,3 +40,6 @@ sysinfo = "0.32"
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
 webkit2gtk = "=2.0.2"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

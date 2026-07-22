@@ -16,9 +16,12 @@ export function ChangeHistoryPage({
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [selectedId, setSelectedId] = useState<string | null>(changes.at(-1)?.id ?? null);
 
+  // Re-select the newest change only when the count changes (an item was
+  // added/removed) — not on every `changes` reference change, which would
+  // reset the user's selection while they're reviewing an older entry.
   useEffect(() => {
     setSelectedId(changes.at(-1)?.id ?? null);
-  }, [changes.length]);
+  }, [changes.length]); // oxlint-disable-line react-hooks/exhaustive-deps
 
   const selected = changes.find((c) => c.id === selectedId) ?? changes.at(-1) ?? null;
 

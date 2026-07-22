@@ -354,7 +354,7 @@ export function Sidebar({
           <div className="px-5 py-8 text-center">
             <MessageSquare className="w-8 h-8 text-foreground-muted/30 mx-auto mb-2" />
             <p className="text-xs text-foreground-muted">
-              {trimmed ? "No agents match your search" : "No chats yet"}
+              {trimmed ? "No chats match your search" : "No chats yet"}
             </p>
           </div>
         )}
@@ -382,14 +382,14 @@ export function Sidebar({
               </div>
             </button>
             {menuOpen && (
-              <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg bg-card border border-border shadow-lg py-1 overflow-hidden">
+              <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg bg-[#181818] border border-[#343434] shadow-lg py-1 px-0.5 overflow-hidden">
                 <button
                   type="button"
                   onClick={() => {
                     setMenuOpen(false);
                     void openUrl("https://rofiant.ca/resources/documentation");
                   }}
-                  className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors"
+                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors rounded-md"
                 >
                   <BookOpen className="w-3.5 h-3.5" />
                   Docs
@@ -400,18 +400,19 @@ export function Sidebar({
                     setMenuOpen(false);
                     void openUrl("https://rofiant.ca/company/contact");
                   }}
-                  className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors border-b border-border"
+                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-[#252525] hover:text-foreground transition-colors rounded-md"
                 >
                   <MessageCircle className="w-3.5 h-3.5" />
                   Contact Us
                 </button>
+                <div className="h-px bg-border my-1" />
                 <button
                   type="button"
                   onClick={() => {
                     setMenuOpen(false);
                     onSignOut();
                   }}
-                  className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors"
+                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-[#252525] hover:text-foreground transition-colors rounded-md"
                 >
                   <LogOut className="w-3.5 h-3.5 -scale-x-100" />
                   Sign out

@@ -1,5 +1,6 @@
 import type { CustomProvider } from "./providers";
 import type { Agent, ChatMode } from "./agents";
+import type { McpServerConfig } from "./mcp";
 
 export type Theme = "light" | "dark" | "system";
 export type FontSize = "sm" | "md" | "lg";
@@ -26,6 +27,8 @@ export interface AppSettings {
   chatMode: ChatMode;
   agents: Agent[];
   activeAgentId: string | null;
+  telemetryEnabled: boolean;
+  mcpServers: McpServerConfig[];
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -47,6 +50,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   chatMode: "ask",
   agents: [],
   activeAgentId: null,
+  telemetryEnabled: true,
+  mcpServers: [],
 };
 
 const KEY = "rofiant_settings";

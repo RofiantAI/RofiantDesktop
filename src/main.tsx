@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { ErrorBoundary } from './components/ErrorBoundary.tsx'
+import { initFileLogging } from './lib/logger.ts'
+
+initFileLogging()
 
 if (import.meta.env.PROD) {
   document.addEventListener('contextmenu', (e) => e.preventDefault())
