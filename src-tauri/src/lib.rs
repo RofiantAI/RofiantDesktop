@@ -436,7 +436,7 @@ fn tool_take_screenshot() -> Result<String, String> {
     let monitors = xcap::Monitor::all().map_err(|e| format!("Error listing monitors: {e}"))?;
     let monitor = monitors
         .iter()
-        .find(|m| m.is_primary())
+        .find(|m| m.is_primary().unwrap_or(false))
         .or_else(|| monitors.first())
         .ok_or_else(|| "No monitors found".to_string())?;
     let img = monitor
