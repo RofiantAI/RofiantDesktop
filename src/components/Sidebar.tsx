@@ -18,6 +18,7 @@ import {
   MessageCircle,
 } from "lucide-react";
 import type { Conversation } from "../types";
+import { ConversationListSkeleton } from "./Skeleton";
 
 export interface SidebarUser {
   email: string;
@@ -39,6 +40,7 @@ export function Avatar({
   if (avatarUrl && !failed) {
     return (
       <img
+        key={avatarUrl}
         src={avatarUrl}
         alt=""
         style={style}
@@ -88,6 +90,7 @@ function groupByDate(conversations: Conversation[]) {
 
 export function Sidebar({
   conversations,
+  loading = false,
   activeId,
   onSelect,
   onNew,
@@ -103,6 +106,7 @@ export function Sidebar({
   onSignOut,
 }: {
   conversations: Conversation[];
+  loading?: boolean;
   activeId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
@@ -234,6 +238,10 @@ export function Sidebar({
       </div>
 
       <nav className="flex-1 overflow-y-auto pb-2">
+        {loading ? (
+          <ConversationListSkeleton />
+        ) : (
+          <>
         {Object.entries(groups).map(([label, items]) => {
           if (!items.length) return null;
           return (
@@ -357,6 +365,8 @@ export function Sidebar({
               {trimmed ? "No chats match your search" : "No chats yet"}
             </p>
           </div>
+        )}
+          </>
         )}
       </nav>
 

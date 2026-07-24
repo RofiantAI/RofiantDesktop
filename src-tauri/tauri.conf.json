@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Rofiant",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "identifier": "com.rofiant.rofiant",
   "build": {
     "frontendDist": "../dist",
@@ -42,6 +42,12 @@
     "longDescription": "Rofiant is a desktop AI chat app that can read and edit files with reviewable diffs, connect to local or hosted language models, and extend itself with external tools over the Model Context Protocol (MCP).",
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "entitlements": "entitlements.plist",
+      "hardenedRuntime": true,
+      "signingIdentity": null
     },
     "createUpdaterArtifacts": true
   },

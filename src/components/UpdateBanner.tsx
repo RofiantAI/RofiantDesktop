@@ -22,36 +22,55 @@ export function UpdateBanner({ update, onDismiss }: { update: Update; onDismiss:
   };
 
   return (
-    <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 bg-accent/10 border-b border-accent/30 text-sm">
-      <span className="text-foreground">
-        {error
-          ? `Update failed: ${error}`
-          : installing
-            ? `Downloading update${progress ? ` (${progress}%)` : ""}...`
-            : `Version ${update.version} is available.`}
-      </span>
-      <div className="flex items-center gap-2 shrink-0">
-        {!installing && (
-          <button
-            type="button"
-            onClick={handleInstall}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-accent text-accent-foreground hover:opacity-90 transition-opacity"
-          >
-            <Download className="w-3.5 h-3.5" />
-            Update & Restart
-          </button>
-        )}
+    <div
+      className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border border-border-light bg-background-secondary shadow-lg"
+      style={{ animation: "toastIn 200ms ease-out" }}
+    >
+      <div className="flex items-start justify-between gap-2 px-3.5 pt-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Download className="w-3.5 h-3.5 text-accent-primary" />
+          Update available
+        </div>
         {!installing && (
           <button
             type="button"
             onClick={onDismiss}
             aria-label="Dismiss"
-            className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
+            className="flex items-center justify-center w-5 h-5 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
           >
-            <X className="w-4 h-4" />
+            <X className="w-3.5 h-3.5" />
           </button>
         )}
       </div>
+      <div className="px-3.5 pt-1 pb-3 text-xs text-foreground-muted">
+        {error
+          ? `Update failed: ${error}`
+          : installing
+            ? `Downloading${progress ? ` (${progress}%)` : ""}...`
+            : `Version ${update.version} is ready to install.`}
+      </div>
+      {!installing && (
+        <div className="px-3.5 pb-3">
+          <button
+            type="button"
+            onClick={handleInstall}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md bg-accent-primary text-white text-sm hover:opacity-90 transition-opacity"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Update & Restart
+          </button>
+        </div>
+      )}
+      {installing && (
+        <div className="px-3.5 pb-3">
+          <div className="h-1 rounded-full bg-background-tertiary overflow-hidden">
+            <div
+              className="h-full bg-accent-primary transition-all duration-150"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

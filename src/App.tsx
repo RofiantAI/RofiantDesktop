@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { listen } from "@tauri-apps/api/event";
@@ -10,15 +10,20 @@ import { Sidebar } from "./components/Sidebar";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { TabBar } from "./components/TabBar";
 import { ChatPanel } from "./components/ChatPanel";
-import { SettingsPage } from "./components/SettingsPage";
+const SettingsPage = lazy(() =>
+  import("./components/SettingsPage").then((m) => ({ default: m.SettingsPage })),
+);
 import { AuthPage } from "./components/AuthPage";
 import { MfaChallenge } from "./components/MfaChallenge";
 import { FileChangesPanel } from "./components/FileChangesPanel";
-import { ChangeHistoryPage } from "./components/ChangeHistoryPage";
+const ChangeHistoryPage = lazy(() =>
+  import("./components/ChangeHistoryPage").then((m) => ({ default: m.ChangeHistoryPage })),
+);
 import { useConfirmDialog } from "./components/ConfirmDialog";
 import { TitleBar } from "./components/TitleBar";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { CommandPalette } from "./components/CommandPalette";
+import { PageSpinner } from "./components/Skeleton";
 import type { CommandItem } from "./components/CommandPalette";
 import {
   Plus,
@@ -89,6 +94,7 @@ function makeConversation(title = "New chat"): Conversation {
 function App() {
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationsLoading, setConversationsLoading] = useState(false);
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -106,6 +112,7 @@ function App() {
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [searchTrigger, setSearchTrigger] = useState(0);
+  const [mcpConnectErrors, setMcpConnectErrors] = useState<{ id: string; name: string; error: string }[]>([]);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const activeRequestIdsRef = useRef<Map<string, string>>(new Map());
@@ -122,7 +129,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    checkForUpdate().then(setAvailableUpdate);
+    checkForUpdate()
+      .then(setAvailableUpdate)
+      .catch((err) => console.error("Background update check failed:", err));
   }, []);
 
   useEffect(() => {
@@ -143,9 +152,13 @@ function App() {
   useEffect(() => {
     for (const server of settings.mcpServers) {
       if (server.enabled) {
-        connectMcpServer(server).catch((err) =>
-          console.error(`Failed to connect MCP server "${server.name}":`, err),
-        );
+        connectMcpServer(server).catch((err) => {
+          console.error(`Failed to connect MCP server "${server.name}":`, err);
+          setMcpConnectErrors((prev) => [
+            ...prev,
+            { id: server.id, name: server.name, error: err instanceof Error ? err.message : String(err) },
+          ]);
+        });
       }
     }
     // Only ever connect the servers present at launch — once Settings is
@@ -283,11 +296,13 @@ function App() {
     }
 
     let cancelled = false;
+    setConversationsLoading(true);
     fetchRemoteConversations(userId).then((remote) => {
       if (cancelled) return;
       setConversations(remote);
       setOpenTabIds(remote.length > 0 ? [remote[0].id] : []);
       setActiveId(remote.length > 0 ? remote[0].id : null);
+      setConversationsLoading(false);
     });
     return () => {
       cancelled = true;
@@ -308,12 +323,12 @@ function App() {
           createdAt: Date.now(),
         },
       ]);
-      setFilesPanelOpen(true);
+      if (p.conversation_id === activeId) setFilesPanelOpen(true);
     });
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [activeId]);
 
   useEffect(() => {
     const apply = () => {
@@ -445,10 +460,15 @@ function App() {
   }, [session, settings.websiteSync]);
 
   const handleCheckForUpdate = useCallback(async () => {
-    const update = await checkForUpdate();
-    setAvailableUpdate(update);
-    track("update_check", { found: !!update });
-    return update;
+    try {
+      const update = await checkForUpdate();
+      setAvailableUpdate(update);
+      track("update_check", { found: !!update });
+      return update;
+    } catch (err) {
+      track("update_check", { found: false, error: err instanceof Error ? err.message : String(err) });
+      throw err;
+    }
   }, []);
 
   const handleExportData = useCallback(() => {
@@ -711,7 +731,8 @@ function App() {
         }
         if (remoteId && settings.websiteSync) void insertRemoteMessage(remoteId, "assistant", assistantText);
       } catch (err) {
-        applyDelta(`⚠ ${err instanceof Error ? err.message : String(err)}`, true);
+        const message = err instanceof Error ? err.message : String(err);
+        applyDelta(`${assistantText ? assistantText + "\n\n" : ""}⚠ ${message}`, true);
       } finally {
         activeRequestIdsRef.current.delete(targetId);
         setConversations((prev) =>
@@ -952,6 +973,7 @@ function App() {
       >
         <Sidebar
           conversations={conversations}
+          loading={conversationsLoading}
           activeId={activeId}
           onSelect={openConversation}
           onNew={handleNew}
@@ -1032,10 +1054,40 @@ function App() {
         onClose={() => setCommandPaletteOpen(false)}
         items={commandItems}
       />
+      {mcpConnectErrors.length > 0 && (
+        <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 w-80">
+          {mcpConnectErrors.map((e) => (
+            <div
+              key={e.id}
+              className="rounded-lg border border-border-light bg-background-secondary shadow-lg px-3.5 py-3 text-xs"
+              style={{ animation: "toastIn 200ms ease-out" }}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="font-medium text-foreground">
+                  Couldn&apos;t connect MCP server &ldquo;{e.name}&rdquo;
+                </span>
+                <button
+                  type="button"
+                  aria-label="Dismiss"
+                  onClick={() =>
+                    setMcpConnectErrors((prev) => prev.filter((x) => x.id !== e.id))
+                  }
+                  className="shrink-0 text-foreground-muted hover:text-foreground transition-colors"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="mt-1 text-foreground-muted">{e.error}</div>
+            </div>
+          ))}
+        </div>
+      )}
       {availableUpdate && (
         <UpdateBanner update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
       )}
-      <div className="flex-1 min-h-0">{content}</div>
+      <div className="flex-1 min-h-0">
+        <Suspense fallback={<PageSpinner />}>{content}</Suspense>
+      </div>
     </div>
   );
 }

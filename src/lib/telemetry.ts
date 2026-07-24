@@ -1,10 +1,16 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { supabase } from "./supabase";
 
-const APP_VERSION = "0.0.1";
 const ANON_ID_KEY = "rofiant_telemetry_anon_id";
 
 let enabled = true;
 let userId: string | null = null;
+let appVersionPromise: Promise<string> | null = null;
+
+function getAppVersion(): Promise<string> {
+  if (!appVersionPromise) appVersionPromise = getVersion().catch(() => "unknown");
+  return appVersionPromise;
+}
 
 export function setTelemetryEnabled(v: boolean) {
   enabled = v;
@@ -33,17 +39,19 @@ function detectPlatform(): string {
 
 export function track(event: string, properties: Record<string, unknown> = {}): void {
   if (!enabled) return;
-  void supabase
-    .from("telemetry_events")
-    .insert({
-      anon_id: getAnonId(),
-      user_id: userId,
-      event,
-      properties,
-      app_version: APP_VERSION,
-      platform: detectPlatform(),
-    })
-    .then(({ error }) => {
-      if (error) console.error("telemetry: failed to send event", event, error);
-    });
+  void getAppVersion().then((appVersion) =>
+    supabase
+      .from("telemetry_events")
+      .insert({
+        anon_id: getAnonId(),
+        user_id: userId,
+        event,
+        properties,
+        app_version: appVersion,
+        platform: detectPlatform(),
+      })
+      .then(({ error }) => {
+        if (error) console.error("telemetry: failed to send event", event, error);
+      }),
+  );
 }

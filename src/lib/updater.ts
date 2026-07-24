@@ -1,14 +1,14 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
+// Deliberately does not swallow errors: a failed check (network error, or a
+// signature that no longer verifies against this build's embedded pubkey
+// after a signing-key rotation) must be distinguishable from "no update
+// available", or a broken updater silently reports "you're up to date"
+// forever. Callers decide how to surface the rejection.
 export async function checkForUpdate(): Promise<Update | null> {
-  try {
-    const update = await check();
-    return update?.available ? update : null;
-  } catch (err) {
-    console.error("Update check failed:", err);
-    return null;
-  }
+  const update = await check();
+  return update?.available ? update : null;
 }
 
 export async function installUpdate(

@@ -45,7 +45,9 @@ export function ChatPanel({
   if (!conversation) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center min-h-0">
-        <p className="text-lg text-foreground-secondary mb-6">What can I help with?</p>
+        <p className="text-2xl text-foreground-secondary mb-6">
+          What can I help with?
+        </p>
         <div className="w-full">
           <Composer
             disabled={false}
@@ -71,15 +73,22 @@ export function ChatPanel({
   }
 
   const lastMessage = conversation.messages.at(-1);
-  const isStreaming = conversation.status === "running" && lastMessage?.role === "assistant";
+  const isStreaming =
+    conversation.status === "running" && lastMessage?.role === "assistant";
   const spacing = settings.density === "compact" ? "space-y-3" : "space-y-6";
   const textSize =
-    settings.fontSize === "sm" ? "text-[13px]" : settings.fontSize === "lg" ? "text-[16px]" : "text-[15px]";
+    settings.fontSize === "sm"
+      ? "text-[13px]"
+      : settings.fontSize === "lg"
+        ? "text-[16px]"
+        : "text-[15px]";
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className={`max-w-[720px] mx-auto px-6 py-8 ${spacing} ${textSize}`}>
+        <div
+          className={`max-w-[720px] mx-auto px-6 py-8 ${spacing} ${textSize}`}
+        >
           {conversation.messages.map((m, i) => (
             <div key={m.id} className="group min-w-0">
               {m.role === "assistant" &&
@@ -90,7 +99,10 @@ export function ChatPanel({
                     Working…
                   </div>
                 )}
-              <MessageBubble message={m} showTimestamp={settings.showTimestamps} />
+              <MessageBubble
+                message={m}
+                showTimestamp={settings.showTimestamps}
+              />
             </div>
           ))}
         </div>

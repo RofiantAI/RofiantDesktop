@@ -33,6 +33,12 @@ export function TitleBar({
 }) {
   return (
     <div
+      // tauri-plugin-decorum's Windows overlay-titlebar script looks for this
+      // marker on page load; without it, it assumes we have no titlebar of
+      // our own and silently injects a full-width, fixed, z-index:100
+      // invisible drag region on top of the whole bar — swallowing every
+      // click on our minimize/maximize/close buttons before it reaches them.
+      data-tauri-decorum-tb
       className={`h-[32px] shrink-0 flex items-center bg-background-secondary border-b border-border select-none overflow-hidden ${
         rounded ? "rounded-t-lg" : ""
       }`}

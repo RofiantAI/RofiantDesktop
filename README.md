@@ -35,6 +35,15 @@ Building the full desktop app (with native bundling) is driven by the Tauri CLI 
 - [Rust](https://www.rust-lang.org) (stable toolchain) and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your platform
 - Optionally, a running [Ollama](https://ollama.com) instance if you want to use local models
 
+### macOS: opening an unsigned build
+
+Rofiant isn't code-signed/notarized by Apple yet, so Gatekeeper blocks a plain double-click on a fresh download. Either:
+
+- Right-click (or Control-click) `Rofiant.app` → **Open** → **Open** on the dialog, or
+- Run `xattr -cr /Applications/Rofiant.app` in Terminal to strip the quarantine flag.
+
+You only need to do this once per install.
+
 ## License
 
 Rofiant is licensed under the [GNU General Public License v3.0](./LICENSE).

@@ -7,6 +7,16 @@
     <title>Rofiant</title>
   </head>
   <body>
+    <!--
+      Present before React mounts so tauri-plugin-decorum's Windows overlay-
+      titlebar script (which checks for this marker at DOMContentLoaded, only
+      once, with no fallback) never races the app's own render and injects
+      its own invisible full-width drag-region overlay on top of our real
+      titlebar. The actual titlebar in src/components/TitleBar.tsx carries
+      the same attribute once mounted; this one is a hidden placeholder that
+      only needs to exist for the plugin's single early check to find.
+    -->
+    <div data-tauri-decorum-tb style="display: none"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

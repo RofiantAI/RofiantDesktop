@@ -406,13 +406,29 @@ fn is_blocked_command(command: &str) -> Option<&'static str> {
     let lower = command.to_lowercase();
     let normalized: String = lower.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    let patterns: &[(&str, &str)] = &[
+    // These target the literal root/home/glob, not a path or file that merely
+    // starts with one (e.g. "rm -rf /tmp/build" or "rm -rf *.log" must not
+    // match) — so the character right after the pattern must end the target
+    // rather than continue it.
+    let rooted_patterns: &[(&str, &str)] = &[
         ("rm -rf /", "recursive delete of the root filesystem"),
         ("rm -rf ~", "recursive delete of the home directory"),
         ("rm -rf *", "recursive delete with an unbounded wildcard"),
         ("rm -fr /", "recursive delete of the root filesystem"),
         ("rm -fr ~", "recursive delete of the home directory"),
         ("rm -fr *", "recursive delete with an unbounded wildcard"),
+    ];
+    for (pattern, reason) in rooted_patterns {
+        if let Some(idx) = normalized.find(pattern) {
+            let after = normalized.as_bytes().get(idx + pattern.len());
+            let target_ends = matches!(after, None | Some(b' ') | Some(b';') | Some(b'&') | Some(b'|'));
+            if target_ends {
+                return Some(reason);
+            }
+        }
+    }
+
+    let patterns: &[(&str, &str)] = &[
         (":(){:|:&};:", "fork bomb"),
         ("mkfs", "formatting a disk/partition"),
         ("dd if=", "raw disk write via dd"),
@@ -1373,8 +1389,14 @@ async fn run_agent(
                     }
                 }
                 "run_command" => {
-                    let cwd = args["cwd"].as_str();
-                    tool_run_command(command, cwd)
+                    // Runs on a blocking-pool thread so a long-lived command
+                    // (e.g. an install or build) can't stall this task's
+                    // worker thread and make Stop/cancel unresponsive.
+                    let cwd = args["cwd"].as_str().map(|s| s.to_string());
+                    let command_owned = command.to_string();
+                    tokio::task::spawn_blocking(move || tool_run_command(&command_owned, cwd.as_deref()))
+                        .await
+                        .unwrap_or_else(|e| format!("Internal error running command: {e}"))
                 }
                 "get_clipboard" => tool_get_clipboard(),
                 "set_clipboard" => {
@@ -1509,7 +1531,8 @@ async fn transcribe_audio(
 
     let form = reqwest::multipart::Form::new()
         .part("file", part)
-        .text("model", TRANSCRIBE_MODEL);
+        .text("model", TRANSCRIBE_MODEL)
+        .text("response_format", "verbose_json");
 
     let client = http_client();
     let response = client
@@ -1532,6 +1555,23 @@ async fn transcribe_audio(
         .map_err(|e| format!("failed to parse response: {e}"))?;
 
     let text = data["text"].as_str().unwrap_or("").trim().to_string();
+    if text.is_empty() {
+        return Ok(text);
+    }
+
+    // whisper hallucinate phrases ("Thank you.", "you", ...) on silent/no-speech
+    // audio; verbose_json segments expose no_speech_prob so we can detect and drop it.
+    const NO_SPEECH_THRESHOLD: f64 = 0.6;
+    if let Some(segments) = data["segments"].as_array() {
+        if !segments.is_empty()
+            && segments
+                .iter()
+                .all(|s| s["no_speech_prob"].as_f64().unwrap_or(0.0) > NO_SPEECH_THRESHOLD)
+        {
+            return Ok(String::new());
+        }
+    }
+
     Ok(text)
 }
 
@@ -1816,4 +1856,176 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod fs_tool_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Uses an absolute temp path so resolve_path passes it through unchanged,
+    // rather than mutating the process-wide HOME env var (which would race
+    // across tests running in parallel in this binary).
+    fn temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("rofiant-test-{label}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_path_passes_through_absolute_paths() {
+        assert_eq!(resolve_path("/etc/hosts"), PathBuf::from("/etc/hosts"));
+    }
+
+    #[test]
+    fn resolve_path_expands_tilde_prefix() {
+        assert_eq!(resolve_path("~/foo/bar"), PathBuf::from(home_dir()).join("foo/bar"));
+    }
+
+    #[test]
+    fn resolve_path_expands_bare_tilde() {
+        assert_eq!(resolve_path("~"), PathBuf::from(home_dir()));
+    }
+
+    #[test]
+    fn resolve_path_joins_relative_paths_to_home() {
+        assert_eq!(resolve_path("foo/bar"), PathBuf::from(home_dir()).join("foo/bar"));
+    }
+
+    #[test]
+    fn write_then_read_file_round_trips() {
+        let dir = temp_dir("write-read");
+        let file = dir.join("hello.txt").display().to_string();
+        assert!(tool_write_file(&file, "hello world").is_ok());
+        assert_eq!(tool_read_file(&file), "hello world");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_file_creates_missing_parent_directories() {
+        let dir = temp_dir("nested");
+        let file = dir.join("a/b/c.txt").display().to_string();
+        assert!(tool_write_file(&file, "nested").is_ok());
+        assert_eq!(std::fs::read_to_string(dir.join("a/b/c.txt")).unwrap(), "nested");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_file_reports_missing_file() {
+        let dir = temp_dir("missing");
+        let file = dir.join("nope.txt").display().to_string();
+        assert!(tool_read_file(&file).starts_with("Error reading file"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_directory_sorts_entries_and_marks_directories() {
+        let dir = temp_dir("list");
+        std::fs::write(dir.join("b.txt"), "").unwrap();
+        std::fs::create_dir(dir.join("a_dir")).unwrap();
+        assert_eq!(tool_list_directory(&dir.display().to_string(), false), "a_dir/\nb.txt");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_directory_reports_empty() {
+        let dir = temp_dir("empty");
+        assert_eq!(tool_list_directory(&dir.display().to_string(), false), "(empty directory)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_file_replaces_unique_occurrence() {
+        let dir = temp_dir("edit-unique");
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "foo bar baz").unwrap();
+        let (msg, old, new) =
+            tool_edit_file(&file.display().to_string(), "bar", "qux", false).unwrap();
+        assert_eq!(old, "foo bar baz");
+        assert_eq!(new, "foo qux baz");
+        assert!(msg.contains("Replaced 1 occurrence"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_file_rejects_ambiguous_match_without_replace_all() {
+        let dir = temp_dir("edit-ambiguous");
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "foo foo foo").unwrap();
+        let result = tool_edit_file(&file.display().to_string(), "foo", "bar", false);
+        assert!(result.unwrap_err().contains("appears 3 times"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_file_replace_all_replaces_every_occurrence() {
+        let dir = temp_dir("edit-all");
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "foo foo foo").unwrap();
+        let (msg, _old, new) =
+            tool_edit_file(&file.display().to_string(), "foo", "bar", true).unwrap();
+        assert_eq!(new, "bar bar bar");
+        assert!(msg.contains("Replaced 3 occurrences"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_file_rejects_empty_old_string() {
+        let dir = temp_dir("edit-empty-old-string");
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "foo").unwrap();
+        assert!(tool_edit_file(&file.display().to_string(), "", "bar", false).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_file_errors_when_old_string_not_found() {
+        let dir = temp_dir("edit-notfound");
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "foo").unwrap();
+        assert!(tool_edit_file(&file.display().to_string(), "missing", "bar", false).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod blocked_command_tests {
+    use super::is_blocked_command;
+
+    #[test]
+    fn blocks_literal_root_delete() {
+        assert!(is_blocked_command("rm -rf /").is_some());
+        assert!(is_blocked_command("rm -rf / ").is_some());
+        assert!(is_blocked_command("sudo rm -rf /").is_some());
+        assert!(is_blocked_command("RM -RF /").is_some());
+    }
+
+    #[test]
+    fn blocks_literal_home_and_wildcard_delete() {
+        assert!(is_blocked_command("rm -rf ~").is_some());
+        assert!(is_blocked_command("rm -rf *").is_some());
+        assert!(is_blocked_command("rm -fr ~").is_some());
+    }
+
+    #[test]
+    fn does_not_block_deletes_scoped_to_a_subpath() {
+        assert!(is_blocked_command("rm -rf /tmp/build").is_none());
+        assert!(is_blocked_command("rm -rf ~/downloads/tmp").is_none());
+        assert!(is_blocked_command("rm -rf *.log").is_none());
+    }
+
+    #[test]
+    fn still_blocks_other_destructive_patterns() {
+        assert!(is_blocked_command("mkfs.ext4 /dev/sda1").is_some());
+        assert!(is_blocked_command("sudo reboot").is_some());
+        assert!(is_blocked_command(":(){:|:&};:").is_some());
+    }
+
+    #[test]
+    fn allows_ordinary_commands() {
+        assert!(is_blocked_command("npm install").is_none());
+        assert!(is_blocked_command("git status").is_none());
+        assert!(is_blocked_command("ls -la /").is_none());
+    }
 }

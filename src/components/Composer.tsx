@@ -81,6 +81,13 @@ export function Composer({
   const segmentTimeoutRef = useRef<number | null>(null);
   const SEGMENT_MS = 3000;
 
+  useEffect(() => {
+    return () => {
+      if (isRecordingRef.current) stopRecording();
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
   const commandMatches = value.startsWith("/")
     ? SLASH_COMMANDS.filter((c) => c.cmd.toLowerCase().startsWith(value.toLowerCase()))
     : [];
