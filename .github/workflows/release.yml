@@ -57,15 +57,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS codesign + notarization. No-op until these secrets exist
-          # (tauri-action skips signing when APPLE_SIGNING_IDENTITY is unset) —
-          # add an Apple Developer ID cert + app-specific password to enable.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS codesign + notarization: intentionally NOT wired up yet.
+          # tauri-bundler triggers `security import` whenever APPLE_CERTIFICATE
+          # is *defined*, even as an empty string — GitHub Actions sets env
+          # vars from unset secrets to "", which isn't the same as omitting
+          # the key, so this crashed the mac build the first time it was added.
+          # Add APPLE_CERTIFICATE/APPLE_CERTIFICATE_PASSWORD/APPLE_SIGNING_IDENTITY/
+          # APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID here only once the actual
+          # Apple Developer ID secrets exist in this repo.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Rofiant ${{ github.ref_name }}"
