@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
+import { isWindows } from "./lib/platform";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { Sidebar } from "./components/Sidebar";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -32,8 +35,8 @@ import {
   History,
   X,
 } from "lucide-react";
-import { generateTitle, sendChatMessage, stopChatMessage } from "./lib/groq";
-import type { ChatUsage } from "./lib/groq";
+import { generateTitle, sendChatMessage, stopChatMessage, respondToolApproval } from "./lib/groq";
+import type { ChatUsage, ToolApprovalRequest } from "./lib/groq";
 import { customProviderIdFromModel } from "./lib/providers";
 import { supabase } from "./lib/supabase";
 import {
@@ -89,6 +92,7 @@ function App() {
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [maximized, setMaximized] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [rules, setRules] = useState<Rule[]>(() => loadRules());
@@ -105,10 +109,36 @@ function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const activeRequestIdsRef = useRef<Map<string, string>>(new Map());
+  const [toolApproval, setToolApproval] = useState<ToolApprovalRequest | null>(null);
+
+  const handleToolApprovalDecision = useCallback((approved: boolean) => {
+    setToolApproval((current) => {
+      if (current) {
+        track("tool_action_reviewed", { tool: current.tool, approved });
+        void respondToolApproval(current.approvalId, approved);
+      }
+      return null;
+    });
+  }, []);
 
   useEffect(() => {
     checkForUpdate().then(setAvailableUpdate);
   }, []);
+
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    appWindow.isMaximized().then(setMaximized);
+    const unlisten = appWindow.onResized(() => {
+      appWindow.isMaximized().then(setMaximized);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    invoke("set_minimize_to_tray", { enabled: settings.minimizeToTray }).catch(() => {});
+  }, [settings.minimizeToTray]);
 
   useEffect(() => {
     for (const server of settings.mcpServers) {
@@ -666,6 +696,14 @@ function App() {
           },
           (requestId) => activeRequestIdsRef.current.set(targetId, requestId),
           activeProvider ? { baseUrl: activeProvider.baseUrl, apiKey: activeProvider.apiKey } : null,
+          (req: ToolApprovalRequest) => {
+            if (settings.chatMode === "skip-permissions") {
+              track("tool_action_reviewed", { tool: req.tool, approved: true, auto: true });
+              void respondToolApproval(req.approvalId, true);
+              return;
+            }
+            setToolApproval(req);
+          },
         );
         if (settings.responseSound) playDoneSound();
         if (settings.notifyOnResponse) {
@@ -957,6 +995,9 @@ function App() {
           onModeChange={(mode) => updateSettings({ chatMode: mode })}
           onAgentChange={(agentId) => updateSettings({ activeAgentId: agentId })}
           accessToken={session?.access_token ?? null}
+          toolApproval={toolApproval}
+          onApproveTool={() => handleToolApprovalDecision(true)}
+          onRejectTool={() => handleToolApprovalDecision(false)}
         />
       </main>
 
@@ -970,11 +1011,22 @@ function App() {
     );
   }
 
+  const rounded = isWindows && !maximized;
+
   return (
-    <div className="flex flex-col h-screen box-border border border-border-light overflow-hidden bg-background text-foreground">
+    <div
+      className={`flex flex-col h-screen box-border border border-border-light overflow-hidden bg-background text-foreground ${
+        rounded ? "rounded-lg" : ""
+      }`}
+    >
       {confirmDialog}
       <ResizeHandles />
-      <TitleBar sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen((v) => !v)} />
+      <TitleBar
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        maximized={maximized}
+        rounded={rounded}
+      />
       <CommandPalette
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}

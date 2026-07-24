@@ -14,12 +14,13 @@ import {
   MessageCircle,
   Bot,
   TriangleAlert,
+  ShieldOff,
 } from "lucide-react";
 import { ALL_MODELS, isLogfareModel, isProModel, isVisionModel, VISION_MODEL_ID } from "../lib/models";
 import { customModelId, type CustomProvider } from "../lib/providers";
 import { readImageFile } from "../lib/image";
 import { SLASH_COMMANDS } from "../lib/commands";
-import { transcribeAudio } from "../lib/groq";
+import { getKiroAutoModel, transcribeAudio } from "../lib/groq";
 import type { SendKey } from "../lib/settings";
 import type { Agent, ChatMode } from "../lib/agents";
 
@@ -68,6 +69,7 @@ export function Composer({
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [logfareTooltipRect, setLogfareTooltipRect] = useState<DOMRect | null>(null);
+  const [kiroAutoModel, setKiroAutoModel] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
   const modeRef = useRef<HTMLDivElement>(null);
@@ -106,7 +108,13 @@ export function Composer({
   }, [modelOpen]);
 
   useEffect(() => {
-    if (!modelOpen) setLogfareTooltipRect(null);
+    if (!modelOpen) {
+      setLogfareTooltipRect(null);
+      return;
+    }
+    getKiroAutoModel()
+      .then(setKiroAutoModel)
+      .catch(() => setKiroAutoModel(null));
   }, [modelOpen]);
 
   useEffect(() => {
@@ -258,8 +266,20 @@ export function Composer({
   const activeModel = ALL_MODELS.find((m) => m.id === model);
   const activeCustomProvider = customProviders.find((p) => customModelId(p.id) === model);
   const activeAgent = agents.find((a) => a.id === activeAgentId) ?? null;
-  const modeLabel = activeAgent ? activeAgent.name : mode === "plan" ? "Plan" : "Ask";
-  const ModeIcon = activeAgent ? Bot : mode === "plan" ? ListChecks : MessageCircle;
+  const modeLabel = activeAgent
+    ? activeAgent.name
+    : mode === "plan"
+      ? "Plan"
+      : mode === "skip-permissions"
+        ? "Skip permissions"
+        : "Ask";
+  const ModeIcon = activeAgent
+    ? Bot
+    : mode === "plan"
+      ? ListChecks
+      : mode === "skip-permissions"
+        ? ShieldOff
+        : MessageCircle;
 
   return (
     <div className="shrink-0 px-6 pb-5 pt-1">
@@ -399,7 +419,7 @@ export function Composer({
               <ChevronDown className="w-3 h-3" />
             </button>
             {modeOpen && (
-              <div className="absolute bottom-full left-0 mb-2 w-56 rounded-lg border border-border bg-[#181818] shadow-lg py-1 px-0.5 z-10">
+              <div className="absolute bottom-full left-0 mb-2 w-56 rounded-lg border border-border bg-card shadow-lg py-1 px-0.5 z-10">
                 <button
                   type="button"
                   onClick={() => {
@@ -407,7 +427,7 @@ export function Composer({
                     onAgentChange(null);
                     setModeOpen(false);
                   }}
-                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-0.5 text-left transition-colors hover:bg-background-tertiary rounded-md"
+                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary rounded-md"
                 >
                   <span className="flex items-center gap-2">
                     <MessageCircle className="w-3.5 h-3.5 text-foreground-muted" />
@@ -427,7 +447,7 @@ export function Composer({
                     onAgentChange(null);
                     setModeOpen(false);
                   }}
-                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-0.5 text-left transition-colors hover:bg-background-tertiary rounded-md"
+                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary rounded-md"
                 >
                   <span className="flex items-center gap-2">
                     <ListChecks className="w-3.5 h-3.5 text-foreground-muted" />
@@ -439,6 +459,30 @@ export function Composer({
                     </span>
                   </span>
                   {mode === "plan" && !activeAgent && (
+                    <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onModeChange("skip-permissions");
+                    onAgentChange(null);
+                    setModeOpen(false);
+                  }}
+                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary rounded-md"
+                >
+                  <span className="flex items-center gap-2">
+                    <ShieldOff className="w-3.5 h-3.5 text-foreground-muted" />
+                    <span>
+                      <span className="block text-[13px] text-foreground font-medium leading-tight">
+                        Skip permissions
+                      </span>
+                      <span className="block text-[11px] text-foreground-muted leading-tight">
+                        Run tools without asking to approve
+                      </span>
+                    </span>
+                  </span>
+                  {mode === "skip-permissions" && !activeAgent && (
                     <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />
                   )}
                 </button>
@@ -549,7 +593,11 @@ export function Composer({
                             </span>
                           )}
                         </span>
-                        <span className="block text-[11px] text-foreground-muted">{m.desc}</span>
+                        <span className="block text-[11px] text-foreground-muted">
+                          {isLogfareModel(m.id) && kiroAutoModel
+                            ? `Currently routing to ${kiroAutoModel}`
+                            : m.desc}
+                        </span>
                       </span>
                       {!locked && model === m.id && (
                         <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />

@@ -4,7 +4,7 @@ export interface Agent {
   systemPrompt: string;
 }
 
-export type ChatMode = "ask" | "plan";
+export type ChatMode = "ask" | "plan" | "skip-permissions";
 
 export const PLAN_MODE_INSTRUCTION =
   "Plan mode: do not perform the task yet. Respond only with a numbered, step-by-step plan " +

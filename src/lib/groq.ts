@@ -24,6 +24,18 @@ interface ChatUsagePayload {
   input_tokens: number;
   output_tokens: number;
 }
+interface ToolApprovalRequestPayload {
+  requestId: string;
+  approvalId: string;
+  tool: string;
+  summary: string;
+}
+
+export interface ToolApprovalRequest {
+  approvalId: string;
+  tool: string;
+  summary: string;
+}
 
 export interface ChatUsage {
   model: string;
@@ -50,6 +62,14 @@ export function stopChatMessage(requestId: string): Promise<void> {
   return invoke("stop_chat", { requestId });
 }
 
+export function getKiroAutoModel(): Promise<string> {
+  return invoke<string>("get_kiro_auto_model");
+}
+
+export function respondToolApproval(approvalId: string, approved: boolean): Promise<void> {
+  return invoke("respond_tool_approval", { approvalId, approved });
+}
+
 export async function transcribeAudio(
   audioBase64: string,
   mimeType: string,
@@ -67,6 +87,7 @@ export async function sendChatMessage(
   onUsage?: (usage: ChatUsage) => void,
   onRequestId?: (requestId: string) => void,
   provider?: ProviderConfig | null,
+  onToolApproval?: (req: ToolApprovalRequest) => void,
 ): Promise<void> {
   const requestId = crypto.randomUUID();
   onRequestId?.(requestId);
@@ -97,6 +118,15 @@ export async function sendChatMessage(
             model: event.payload.model,
             inputTokens: event.payload.input_tokens,
             outputTokens: event.payload.output_tokens,
+          });
+        }
+      }),
+      listen<ToolApprovalRequestPayload>("tool-approval-request", (event) => {
+        if (event.payload.requestId === requestId) {
+          onToolApproval?.({
+            approvalId: event.payload.approvalId,
+            tool: event.payload.tool,
+            summary: event.payload.summary,
           });
         }
       }),

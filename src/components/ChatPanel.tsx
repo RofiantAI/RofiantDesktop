@@ -5,6 +5,8 @@ import type { AppSettings } from "../lib/settings";
 import type { ChatMode } from "../lib/agents";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
+import { ToolApprovalCard } from "./ToolApprovalCard";
+import type { ToolApprovalRequest } from "../lib/groq";
 
 export function ChatPanel({
   conversation,
@@ -16,6 +18,9 @@ export function ChatPanel({
   onModeChange,
   onAgentChange,
   accessToken,
+  toolApproval,
+  onApproveTool,
+  onRejectTool,
 }: {
   conversation: Conversation | null;
   onSend: (text: string, imageDataUrl?: string) => void;
@@ -26,6 +31,9 @@ export function ChatPanel({
   onModeChange: (mode: ChatMode) => void;
   onAgentChange: (agentId: string | null) => void;
   accessToken: string | null;
+  toolApproval: ToolApprovalRequest | null;
+  onApproveTool: () => void;
+  onRejectTool: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastMessageContent = conversation?.messages.at(-1)?.content;
@@ -87,6 +95,13 @@ export function ChatPanel({
           ))}
         </div>
       </div>
+      {toolApproval && (
+        <ToolApprovalCard
+          summary={toolApproval.summary}
+          onApprove={onApproveTool}
+          onReject={onRejectTool}
+        />
+      )}
       <Composer
         disabled={conversation.status === "running"}
         isRunning={conversation.status === "running"}

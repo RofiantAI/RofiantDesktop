@@ -1,11 +1,12 @@
 import { memo, type ReactNode } from "react";
-import { FolderOpen, FileText, PenLine, TerminalSquare, Wrench } from "lucide-react";
+import { FolderOpen, FileText, PenLine, TerminalSquare, Wrench, Ban } from "lucide-react";
 
 const TOOL_ICONS: Record<string, typeof Wrench> = {
   list_directory: FolderOpen,
   read_file: FileText,
   write_file: PenLine,
   run_command: TerminalSquare,
+  rejected: Ban,
 };
 
 const TOOL_TAG = /^@@tool:([a-zA-Z0-9_]+)@@(.*)$/;

@@ -382,7 +382,7 @@ export function Sidebar({
               </div>
             </button>
             {menuOpen && (
-              <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg bg-[#181818] border border-[#343434] shadow-lg py-1 px-0.5 overflow-hidden">
+              <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg bg-card border border-border shadow-lg py-1 px-0.5 overflow-hidden">
                 <button
                   type="button"
                   onClick={() => {
@@ -400,7 +400,7 @@ export function Sidebar({
                     setMenuOpen(false);
                     void openUrl("https://rofiant.ca/company/contact");
                   }}
-                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-[#252525] hover:text-foreground transition-colors rounded-md"
+                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors rounded-md"
                 >
                   <MessageCircle className="w-3.5 h-3.5" />
                   Contact Us
@@ -412,9 +412,9 @@ export function Sidebar({
                     setMenuOpen(false);
                     onSignOut();
                   }}
-                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-[#252525] hover:text-foreground transition-colors rounded-md"
+                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors rounded-md"
                 >
-                  <LogOut className="w-3.5 h-3.5 -scale-x-100" />
+                  <LogOut className="w-3.5 h-3.5" />
                   Sign out
                 </button>
               </div>

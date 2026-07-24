@@ -29,6 +29,7 @@ export interface AppSettings {
   activeAgentId: string | null;
   telemetryEnabled: boolean;
   mcpServers: McpServerConfig[];
+  minimizeToTray: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -52,6 +53,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activeAgentId: null,
   telemetryEnabled: true,
   mcpServers: [],
+  minimizeToTray: false,
 };
 
 const KEY = "rofiant_settings";

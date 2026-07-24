@@ -4,12 +4,13 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tauri_plugin_notification::NotificationExt;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 
 mod mcp;
 
@@ -17,6 +18,23 @@ const CANCELLED: &str = "__cancelled__";
 
 #[derive(Default)]
 struct ChatCancellations(Mutex<HashMap<String, watch::Sender<bool>>>);
+
+// Keyed by "{request_id}:{call_id}" so a stale approval from a cancelled or
+// finished request can never resolve a later one that happens to reuse a
+// call_id.
+#[derive(Default)]
+struct ToolApprovals(Mutex<HashMap<String, oneshot::Sender<bool>>>);
+
+// Toggled from the frontend's "minimize to tray" setting. When set, closing
+// the main window hides it instead of quitting; the tray menu is then the
+// only way to actually exit.
+#[derive(Default)]
+struct MinimizeToTray(AtomicBool);
+
+#[tauri::command]
+fn set_minimize_to_tray(state: State<MinimizeToTray>, enabled: bool) {
+    state.0.store(enabled, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +75,15 @@ struct ChatUsagePayload {
 struct ChatErrorPayload {
     request_id: String,
     message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolApprovalRequestPayload {
+    request_id: String,
+    approval_id: String,
+    tool: String,
+    summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,6 +138,72 @@ fn streaming_http_client() -> reqwest::Client {
 fn model_uses_logfare(model: &str) -> bool {
     model == "kiro-auto"
 }
+
+const LOGFARE_STATUS_URL: &str = "https://logfare.ai/v1/status";
+const LOGFARE_BEST_MODEL_TTL: Duration = Duration::from_secs(3 * 60);
+
+static LOGFARE_BEST_MODEL_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+
+/// Reads the /v1/status endpoint of the given data and returns the
+/// operational model_id with the highest uptime_percent over its reported
+/// window, excluding kiro-auto itself (that's the router this replaces, not
+/// a candidate for it). Operational models always outrank degraded ones,
+/// but degraded models are still ranked against each other by uptime_percent
+/// instead of being thrown out — during a broad outage every model can show
+/// "degraded" at once, and picking the least-bad one still beats silently
+/// falling back to unmodified "kiro-auto".
+fn pick_best_logfare_model(status: &Value) -> Option<String> {
+    fn rank(m: &Value) -> (bool, f64) {
+        let operational = m["status"].as_str() == Some("operational");
+        let uptime = m["uptime_percent"].as_f64().unwrap_or(0.0);
+        (operational, uptime)
+    }
+
+    status["data"]
+        .as_array()?
+        .iter()
+        .filter(|m| m["model_id"].as_str() != Some("kiro-auto"))
+        .max_by(|a, b| rank(a).partial_cmp(&rank(b)).unwrap_or(std::cmp::Ordering::Equal))
+        .and_then(|m| m["model_id"].as_str())
+        .map(str::to_string)
+}
+
+/// Picks the best-performing Logfare model for "kiro-auto" by checking
+/// https://logfare.ai/v1/status every LOGFARE_BEST_MODEL_TTL and caching the
+/// result in between — Logfare's
+/// own auto-router has no uptime guarantee of its own, so we do the picking
+/// ourselves instead of trusting it. Falls back to "kiro-auto" unchanged if
+/// the status check fails or times out, so a Logfare hiccup never blocks a
+/// chat request.
+async fn resolve_kiro_auto_model(client: &reqwest::Client) -> String {
+    const FALLBACK: &str = "kiro-auto";
+
+    if let Some((checked_at, model)) = LOGFARE_BEST_MODEL_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap().as_ref() {
+        if checked_at.elapsed() < LOGFARE_BEST_MODEL_TTL {
+            return model.clone();
+        }
+    }
+
+    let picked = async {
+        let resp = client.get(LOGFARE_STATUS_URL).send().await.ok()?;
+        let status: Value = resp.json().await.ok()?;
+        pick_best_logfare_model(&status)
+    }
+    .await
+    .unwrap_or_else(|| FALLBACK.to_string());
+
+    *LOGFARE_BEST_MODEL_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some((Instant::now(), picked.clone()));
+    picked
+}
+
+/// Lets the frontend show which concrete model "Kiro Auto" is currently
+/// routing to (e.g. in the model picker), without waiting for an actual chat
+/// request to trigger the status check.
+#[tauri::command]
+async fn get_kiro_auto_model() -> String {
+    resolve_kiro_auto_model(&http_client()).await
+}
+
 const GROQ_TRANSCRIBE_PROXY_URL: &str =
     "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/groq-transcribe-proxy";
 const TRANSCRIBE_MODEL: &str = "whisper-large-v3-turbo";
@@ -430,15 +523,23 @@ fn tool_set_clipboard(text: &str) -> String {
     }
 }
 
-/// Returns a data: URL of a PNG screenshot on success, or an error string on failure.
-fn tool_take_screenshot() -> Result<String, String> {
+/// Returns a data: URL of a PNG screenshot of the monitor the user is currently
+/// on (wherever the cursor is), or an error string on failure. Falls back to
+/// the primary monitor if the cursor position can't be determined.
+fn tool_take_screenshot(app: &AppHandle) -> Result<String, String> {
     use base64::Engine;
-    let monitors = xcap::Monitor::all().map_err(|e| format!("Error listing monitors: {e}"))?;
-    let monitor = monitors
-        .iter()
-        .find(|m| m.is_primary().unwrap_or(false))
-        .or_else(|| monitors.first())
-        .ok_or_else(|| "No monitors found".to_string())?;
+
+    let cursor = app.cursor_position().ok();
+    let monitor = cursor
+        .and_then(|pos| xcap::Monitor::from_point(pos.x as i32, pos.y as i32).ok())
+        .map(Ok)
+        .unwrap_or_else(|| {
+            let monitors = xcap::Monitor::all().map_err(|e| format!("Error listing monitors: {e}"))?;
+            monitors
+                .into_iter()
+                .find(|m| m.is_primary().unwrap_or(false))
+                .ok_or_else(|| "No monitors found".to_string())
+        })?;
     let img = monitor
         .capture_image()
         .map_err(|e| format!("Error capturing screen: {e}"))?;
@@ -796,6 +897,79 @@ fn stop_chat(cancellations: State<'_, ChatCancellations>, request_id: String) ->
     Ok(())
 }
 
+#[tauri::command]
+fn respond_tool_approval(
+    approvals: State<'_, ToolApprovals>,
+    approval_id: String,
+    approved: bool,
+) -> Result<(), String> {
+    match approvals.0.lock().unwrap().remove(&approval_id) {
+        Some(tx) => {
+            let _ = tx.send(approved);
+            Ok(())
+        }
+        None => Err("No pending approval with that id.".to_string()),
+    }
+}
+
+/// Tools that touch the filesystem, run commands, kill processes, launch
+/// other programs, or call out to an MCP server — anything with a real-world
+/// side effect the user might not want. Read-only tools (listing/reading
+/// files, reading the clipboard, screenshots, listing processes) run without
+/// asking, same as before.
+fn tool_needs_approval(name: &str) -> bool {
+    mcp::is_mcp_tool(name)
+        || matches!(name, "write_file" | "edit_file" | "run_command" | "kill_process" | "open_app")
+}
+
+fn tool_approval_summary(tool: &str, args: &Value) -> String {
+    let path = args["path"].as_str().unwrap_or(".");
+    let command = args["command"].as_str().unwrap_or("");
+    match tool {
+        "write_file" => format!("Write to `{path}`"),
+        "edit_file" => format!("Edit `{path}`"),
+        "run_command" => format!("Run `{command}`"),
+        "kill_process" => format!("Kill process {}", args["pid"].as_u64().unwrap_or(0)),
+        "open_app" => format!("Launch `{command}`"),
+        other => format!("Run `{other}`"),
+    }
+}
+
+/// Emits a tool-approval-request event and blocks until the frontend answers
+/// via respond_tool_approval, or the request is cancelled. Only called for
+/// tools tool_needs_approval flags — read-only tools skip this entirely.
+async fn request_tool_approval(
+    app: &AppHandle,
+    request_id: &str,
+    call_id: &str,
+    tool: &str,
+    args: &Value,
+    cancel_rx: &mut watch::Receiver<bool>,
+) -> Result<bool, String> {
+    let approval_id = format!("{request_id}:{call_id}");
+    let (tx, rx) = oneshot::channel();
+    app.state::<ToolApprovals>().0.lock().unwrap().insert(approval_id.clone(), tx);
+
+    let _ = app.emit(
+        "tool-approval-request",
+        ToolApprovalRequestPayload {
+            request_id: request_id.to_string(),
+            approval_id: approval_id.clone(),
+            tool: tool.to_string(),
+            summary: tool_approval_summary(tool, args),
+        },
+    );
+
+    tokio::select! {
+        biased;
+        _ = cancel_rx.changed() => {
+            app.state::<ToolApprovals>().0.lock().unwrap().remove(&approval_id);
+            Err(CANCELLED.to_string())
+        }
+        result = rx => Ok(result.unwrap_or(false)),
+    }
+}
+
 /// Tool names the model can call — used to recognize leaked pseudo tool-call
 /// notation even when the model drops the `<function=` wrapper around it.
 const TOOL_NAMES: &[&str] = &[
@@ -965,6 +1139,14 @@ async fn run_agent(
         None if model_uses_logfare(model) => (LOGFARE_PROXY_URL.to_string(), access_token),
         None => (GROQ_PROXY_URL.to_string(), access_token),
     };
+    // "kiro-auto" is the user-facing selection everywhere else (routing
+    // above, the chat-usage event below) — only the outbound request body
+    // uses whichever concrete model today's status check picked.
+    let outbound_model: String = if model_uses_logfare(model) {
+        resolve_kiro_auto_model(&client).await
+    } else {
+        model.to_string()
+    };
     // Some chat templates (notably several local models served through
     // Ollama) only honor a single system message and silently drop or
     // mangle any additional ones. Fold any extra system-role messages the
@@ -1020,7 +1202,7 @@ async fn run_agent(
         }
 
         let mut body = json!({
-            "model": model,
+            "model": outbound_model,
             "messages": convo,
         });
         if include_tools {
@@ -1134,7 +1316,16 @@ async fn run_agent(
 
             let mut screenshot_data_url: Option<String> = None;
 
-            let result = if mcp::is_mcp_tool(name) {
+            let approved = if tool_needs_approval(name) {
+                request_tool_approval(app, request_id, &call_id, name, &args, &mut cancel_rx).await?
+            } else {
+                true
+            };
+
+            let result = if !approved {
+                emit_text(app, request_id, "@@tool:rejected@@Rejected — skipped\n\n".to_string());
+                "The user rejected this action; it was not run.".to_string()
+            } else if mcp::is_mcp_tool(name) {
                 mcp::call_tool(app.state::<mcp::McpState>().inner(), name, args.clone()).await
             } else {
                 match name {
@@ -1190,7 +1381,7 @@ async fn run_agent(
                     let text = args["text"].as_str().unwrap_or("");
                     tool_set_clipboard(text)
                 }
-                "take_screenshot" => match tool_take_screenshot() {
+                "take_screenshot" => match tool_take_screenshot(app) {
                     Ok(data_url) => {
                         screenshot_data_url = Some(data_url);
                         "Screenshot captured; attached as an image below.".to_string()
@@ -1460,6 +1651,14 @@ async fn mcp_disconnect(state: State<'_, mcp::McpState>, id: String) -> Result<(
     Ok(())
 }
 
+// Requests a Mica backdrop on Windows 11 (no-op with an ignored error on
+// Windows 10, where the DWM attribute doesn't exist). Round corners are
+// already DWM's default for a borderless window, so nothing to pin there.
+#[cfg(windows)]
+fn apply_windows_chrome(window: &tauri::WebviewWindow) {
+    let _ = window_vibrancy::apply_mica(window, None);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK's DMA-BUF renderer produces blurry/pixelated output on many
@@ -1483,6 +1682,14 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}));
     }
 
+    // Gives the custom titlebar's maximize button real Windows 11 Snap
+    // Layout support (the hover flyout), which a fully custom-drawn caption
+    // button can't get on its own without native hit-test cooperation.
+    #[cfg(windows)]
+    {
+        builder = builder.plugin(tauri_plugin_decorum::init());
+    }
+
     builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
@@ -1490,7 +1697,20 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(ChatCancellations::default())
+        .manage(ToolApprovals::default())
         .manage(mcp::McpState::default())
+        .manage(MinimizeToTray::default())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let minimize_to_tray = window.state::<MinimizeToTray>().0.load(Ordering::Relaxed);
+                    if minimize_to_tray {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
+        })
         .setup(|app| {
             let mut log_targets = vec![Target::new(TargetKind::LogDir {
                 file_name: Some("rofiant".to_string()),
@@ -1534,18 +1754,65 @@ pub fn run() {
                 });
             }
 
+            #[cfg(windows)]
+            if let Some(main_window) = app.get_webview_window("main") {
+                use tauri_plugin_decorum::WebviewWindowExt;
+                // Registers the window-proc hook Snap Layouts needs; our own
+                // custom-drawn titlebar (src/components/TitleBar.tsx) keeps
+                // rendering as-is, this only adds native hit-test cooperation.
+                let _ = main_window.create_overlay_titlebar();
+                apply_windows_chrome(&main_window);
+            }
+
+            let show_i = tauri::menu::MenuItem::with_id(app, "show", "Show Rofiant", true, None::<&str>)?;
+            let quit_i = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let tray_menu = tauri::menu::Menu::with_items(app, &[&show_i, &quit_i])?;
+
+            tauri::tray::TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             send_chat,
             stop_chat,
+            respond_tool_approval,
             generate_title,
             transcribe_audio,
             ollama_list_models,
             ollama_pull_model,
             ollama_delete_model,
             mcp_connect,
-            mcp_disconnect
+            mcp_disconnect,
+            set_minimize_to_tray,
+            get_kiro_auto_model
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

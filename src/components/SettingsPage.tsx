@@ -45,6 +45,7 @@ import {
 import { Avatar } from "./Sidebar";
 import { useConfirmDialog } from "./ConfirmDialog";
 import { connectMcpServer, disconnectMcpServer, type McpServerConfig, type McpToolInfo } from "../lib/mcp";
+import { isWindows } from "../lib/platform";
 
 type Section =
   | "general"
@@ -134,7 +135,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-border bg-[#1f1f1f] divide-y divide-border overflow-hidden">
+    <div className="rounded-xl border border-border bg-card divide-y divide-border overflow-hidden">
       {children}
     </div>
   );
@@ -708,6 +709,23 @@ export function SettingsPage({
                   />
                 </CardRow>
               </Card>
+
+              {isWindows && (
+                <>
+                  <SectionLabel>Window</SectionLabel>
+                  <Card>
+                    <CardRow
+                      label="Minimize to tray"
+                      description="Closing the window hides it to the system tray instead of quitting"
+                    >
+                      <Toggle
+                        checked={settings.minimizeToTray}
+                        onChange={(v) => onChange({ minimizeToTray: v })}
+                      />
+                    </CardRow>
+                  </Card>
+                </>
+              )}
 
               {userEmail && (
                 <button

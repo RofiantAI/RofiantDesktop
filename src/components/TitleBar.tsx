@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Minus,
   Square,
@@ -8,30 +8,35 @@ import {
   PanelLeft,
   PanelLeftClose,
 } from "lucide-react";
+import { isWindows } from "../lib/platform";
 
 const appWindow = getCurrentWindow();
+
+// Lets Windows 11 show its native Snap Layout flyout when hovering our
+// custom-drawn maximize button, same as it would for a system caption
+// button. No-ops (and is denied by capabilities) on non-Windows platforms.
+function showSnapOverlay() {
+  if (!isWindows) return;
+  invoke("plugin:decorum|show_snap_overlay").catch(() => {});
+}
 
 export function TitleBar({
   sidebarOpen,
   onToggleSidebar,
+  maximized,
+  rounded,
 }: {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  maximized: boolean;
+  rounded: boolean;
 }) {
-  const [maximized, setMaximized] = useState(false);
-
-  useEffect(() => {
-    appWindow.isMaximized().then(setMaximized);
-    const unlisten = appWindow.onResized(() => {
-      appWindow.isMaximized().then(setMaximized);
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, []);
-
   return (
-    <div className="h-[32px] shrink-0 flex items-center bg-background-secondary border-b border-border select-none">
+    <div
+      className={`h-[32px] shrink-0 flex items-center bg-background-secondary border-b border-border select-none overflow-hidden ${
+        rounded ? "rounded-t-lg" : ""
+      }`}
+    >
       <div
         data-tauri-drag-region
         className="flex-1 h-full flex items-center px-3 gap-3"
@@ -74,6 +79,7 @@ export function TitleBar({
         <button
           type="button"
           onClick={() => appWindow.toggleMaximize()}
+          onMouseEnter={showSnapOverlay}
           aria-label={maximized ? "Restore" : "Maximize"}
           className="flex items-center justify-center w-10 h-full text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
         >

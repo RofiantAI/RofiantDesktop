@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "windows",
+  "description": "Windows-only permissions (Snap Layout overlay), scoped so non-Windows builds never see a plugin that isn't compiled in on their platform",
+  "platforms": ["windows"],
+  "windows": ["main"],
+  "permissions": ["decorum:allow-show-snap-overlay"]
+}
