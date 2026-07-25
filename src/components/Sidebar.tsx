@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import type { Conversation } from "../types";
 import { ConversationListSkeleton } from "./Skeleton";
+import { SidebarNews } from "./SidebarNews";
+import { modShortcut } from "../lib/platform";
 
 export interface SidebarUser {
   email: string;
@@ -233,7 +235,7 @@ export function Sidebar({
         >
           <Plus className="w-4 h-4 text-foreground-muted" />
           <span className="flex-1 text-left">New Chat</span>
-          <kbd className="text-[13px] text-foreground-muted">⌘N</kbd>
+          <kbd className="text-[13px] text-foreground-muted">{modShortcut("⌘N")}</kbd>
         </button>
       </div>
 
@@ -369,6 +371,8 @@ export function Sidebar({
           </>
         )}
       </nav>
+
+      <SidebarNews />
 
       <div
         className="border-t border-border px-3 py-2.5 flex items-center gap-2 relative"

@@ -8,7 +8,7 @@ import {
   PanelLeft,
   PanelLeftClose,
 } from "lucide-react";
-import { isWindows } from "../lib/platform";
+import { isWindows, isMac } from "../lib/platform";
 
 const appWindow = getCurrentWindow();
 
@@ -18,6 +18,40 @@ const appWindow = getCurrentWindow();
 function showSnapOverlay() {
   if (!isWindows) return;
   invoke("plugin:decorum|show_snap_overlay").catch(() => {});
+}
+
+// decorations:false suppresses native chrome on every OS, including
+// macOS's traffic lights — without this, mac users would get the
+// Windows-style caption buttons below instead of anything native-looking.
+function MacTrafficLights() {
+  return (
+    <div className="flex items-center gap-2 pl-3 pr-1 h-full shrink-0 group/lights">
+      <button
+        type="button"
+        onClick={() => appWindow.close()}
+        aria-label="Close"
+        className="w-3 h-3 rounded-full bg-[#ff5f57] flex items-center justify-center"
+      >
+        <X className="w-2 h-2 text-black/60 opacity-0 group-hover/lights:opacity-100" strokeWidth={3} />
+      </button>
+      <button
+        type="button"
+        onClick={() => appWindow.minimize()}
+        aria-label="Minimize"
+        className="w-3 h-3 rounded-full bg-[#febc2e] flex items-center justify-center"
+      >
+        <Minus className="w-2 h-2 text-black/60 opacity-0 group-hover/lights:opacity-100" strokeWidth={3} />
+      </button>
+      <button
+        type="button"
+        onClick={() => appWindow.toggleMaximize()}
+        aria-label="Maximize"
+        className="w-3 h-3 rounded-full bg-[#28c840] flex items-center justify-center"
+      >
+        <Square className="w-1.5 h-1.5 text-black/60 opacity-0 group-hover/lights:opacity-100" strokeWidth={3} />
+      </button>
+    </div>
+  );
 }
 
 export function TitleBar({
@@ -43,6 +77,7 @@ export function TitleBar({
         rounded ? "rounded-t-lg" : ""
       }`}
     >
+      {isMac && <MacTrafficLights />}
       <div
         data-tauri-drag-region
         className="flex-1 h-full flex items-center px-3 gap-3"
@@ -73,37 +108,39 @@ export function TitleBar({
           )}
         </button>
       </div>
-      <div className="flex items-center h-full shrink-0">
-        <button
-          type="button"
-          onClick={() => appWindow.minimize()}
-          aria-label="Minimize"
-          className="flex items-center justify-center w-10 h-full text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
-        >
-          <Minus className="w-3.5 h-3.5" />
-        </button>
-        <button
-          type="button"
-          onClick={() => appWindow.toggleMaximize()}
-          onMouseEnter={showSnapOverlay}
-          aria-label={maximized ? "Restore" : "Maximize"}
-          className="flex items-center justify-center w-10 h-full text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
-        >
-          {maximized ? (
-            <Copy className="w-3 h-3" />
-          ) : (
-            <Square className="w-3 h-3" />
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => appWindow.close()}
-          aria-label="Close"
-          className="flex items-center justify-center w-10 h-full text-foreground-muted hover:bg-red-500 hover:text-white transition-colors"
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
+      {!isMac && (
+        <div className="flex items-center h-full shrink-0">
+          <button
+            type="button"
+            onClick={() => appWindow.minimize()}
+            aria-label="Minimize"
+            className="flex items-center justify-center w-10 h-full text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
+          >
+            <Minus className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => appWindow.toggleMaximize()}
+            onMouseEnter={showSnapOverlay}
+            aria-label={maximized ? "Restore" : "Maximize"}
+            className="flex items-center justify-center w-10 h-full text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
+          >
+            {maximized ? (
+              <Copy className="w-3 h-3" />
+            ) : (
+              <Square className="w-3 h-3" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => appWindow.close()}
+            aria-label="Close"
+            className="flex items-center justify-center w-10 h-full text-foreground-muted hover:bg-red-500 hover:text-white transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

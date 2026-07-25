@@ -417,6 +417,9 @@ fn is_blocked_command(command: &str) -> Option<&'static str> {
         ("rm -fr /", "recursive delete of the root filesystem"),
         ("rm -fr ~", "recursive delete of the home directory"),
         ("rm -fr *", "recursive delete with an unbounded wildcard"),
+        ("rd /s /q c:\\", "recursive delete of the C: drive"),
+        ("rmdir /s /q c:\\", "recursive delete of the C: drive"),
+        ("del /f /s /q c:\\", "recursive delete of the C: drive"),
     ];
     for (pattern, reason) in rooted_patterns {
         if let Some(idx) = normalized.find(pattern) {
@@ -431,6 +434,7 @@ fn is_blocked_command(command: &str) -> Option<&'static str> {
     let patterns: &[(&str, &str)] = &[
         (":(){:|:&};:", "fork bomb"),
         ("mkfs", "formatting a disk/partition"),
+        ("diskpart", "raw disk/partition management"),
         ("dd if=", "raw disk write via dd"),
         ("> /dev/sd", "overwriting a raw disk device"),
         ("> /dev/nvme", "overwriting a raw disk device"),
@@ -464,6 +468,23 @@ fn is_blocked_command(command: &str) -> Option<&'static str> {
             || normalized.contains("| sudo"));
     if pipes_to_shell {
         return Some("downloading and piping a remote script directly into a shell");
+    }
+
+    // Windows `format <drive>:` — checked by scanning tokens rather than a
+    // bare "format " substring, since "format" alone is a common word in
+    // build tool output (e.g. `npm run format`, PowerShell's `Format-List`).
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        if *word == "format" {
+            if let Some(next) = words.get(i + 1) {
+                let is_drive = next.len() == 2
+                    && next.as_bytes()[1] == b':'
+                    && next.as_bytes()[0].is_ascii_alphabetic();
+                if is_drive {
+                    return Some("formatting a disk/partition");
+                }
+            }
+        }
     }
 
     for (pattern, reason) in patterns {
@@ -621,6 +642,66 @@ fn tool_open_app(command: &str) -> String {
     }
 }
 
+const ROFIANT_DOCUMENT_SEARCH_URL: &str = "https://rofiant.ca/api/documents/search";
+
+/// Searches the user's cloud-hosted knowledge-base documents by keyword.
+/// Requires a signed-in Pro/Ultra user with indexed documents — an empty or
+/// unauthenticated result set just comes back as "No matches.", not an error,
+/// since a Free user or signed-out user simply has nothing to search yet.
+async fn tool_search_knowledge_base(client: &reqwest::Client, access_token: &str, query: &str) -> String {
+    if access_token.is_empty() {
+        return "Sign in to your Rofiant account to search your knowledge base.".to_string();
+    }
+    if query.trim().is_empty() {
+        return "Provide a search query.".to_string();
+    }
+
+    let response = match client
+        .get(ROFIANT_DOCUMENT_SEARCH_URL)
+        .bearer_auth(access_token)
+        .query(&[("q", query)])
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return format!("Error reaching the knowledge base: {e}"),
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return format!("Knowledge base search failed ({status}): {text}");
+    }
+
+    let data: Value = match response.json().await {
+        Ok(v) => v,
+        Err(e) => return format!("Error parsing knowledge base response: {e}"),
+    };
+
+    let results = data["results"].as_array().cloned().unwrap_or_default();
+    if results.is_empty() {
+        return "No matches in the knowledge base.".to_string();
+    }
+
+    let mut out = String::new();
+    for r in &results {
+        let name = r["name"].as_str().unwrap_or("Untitled document");
+        out.push_str(&format!("## {name}\n"));
+        if let Some(summary) = r["summary"].as_str().filter(|s| !s.is_empty()) {
+            out.push_str(&format!("Summary: {summary}\n"));
+        }
+        if let Some(excerpts) = r["excerpts"].as_array() {
+            for excerpt in excerpts {
+                if let Some(text) = excerpt.as_str() {
+                    out.push_str(&format!("> {text}\n"));
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn tools_schema() -> Value {
     json!([
         {
@@ -723,6 +804,8 @@ fn tools_schema() -> Value {
                             "type": "string",
                             "description": if cfg!(target_os = "windows") {
                                 "The shell command to execute (runs via cmd /C), e.g. 'dir' or 'start https://example.com'."
+                            } else if cfg!(target_os = "macos") {
+                                "The shell command to execute, e.g. 'ls -la' or 'open https://example.com'."
                             } else {
                                 "The shell command to execute, e.g. 'ls -la' or 'xdg-open https://example.com'."
                             }
@@ -794,6 +877,8 @@ fn tools_schema() -> Value {
                 "name": "open_app",
                 "description": if cfg!(target_os = "windows") {
                     "Launch an application, file, or URL without blocking (use this instead of run_command for opening GUI apps, since run_command waits for the process to exit). Examples: 'notepad', 'code .', 'start https://example.com'."
+                } else if cfg!(target_os = "macos") {
+                    "Launch an application, file, or URL without blocking (use this instead of run_command for opening GUI apps, since run_command waits for the process to exit). Examples: 'open -a Safari', 'code .', 'open https://example.com'."
                 } else {
                     "Launch an application, file, or URL without blocking (use this instead of run_command for opening GUI apps, since run_command waits for the process to exit). Examples: 'firefox', 'code .', 'xdg-open https://example.com'."
                 },
@@ -820,6 +905,20 @@ fn tools_schema() -> Value {
                     "required": ["title", "body"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_knowledge_base",
+                "description": "Search the user's knowledge bases (documents they've uploaded to their Rofiant account on Pro/Ultra) by keyword. Returns matching document names, summaries, and text excerpts. Requires the user to be signed in with a Pro or Ultra plan and to have uploaded documents; returns no results otherwise.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Keywords to search for across the user's uploaded documents." }
+                    },
+                    "required": ["query"]
+                }
+            }
         }
     ])
 }
@@ -829,13 +928,18 @@ fn system_prompt() -> String {
     format!(
         "You are Rofiant, an AI assistant with real, direct access to the user's computer through \
 tools: list_directory, read_file, write_file, edit_file, run_command, get_clipboard, set_clipboard, \
-take_screenshot, list_processes, kill_process, open_app, and send_notification. These are not \
-simulations — they execute for real on the user's machine. The user's home directory is exactly \
+take_screenshot, list_processes, kill_process, open_app, send_notification, and search_knowledge_base. \
+These are not simulations — they execute for real on the user's machine (except search_knowledge_base, \
+which searches documents the user has uploaded to their Rofiant account on the cloud, not local files). \
+The user's home directory is exactly \
 `{home}`. Use paths relative to it (e.g. 'Desktop/notes.txt') or prefixed with '~/' — never guess \
 a literal username like /home/user/... or /Users/username/..., since it will resolve to the wrong \
 place or fail with a permission error. Prefer open_app over run_command for launching GUI \
 applications, since run_command waits for the process to exit and will hang. Use take_screenshot \
-when you need to see what's currently on screen. Use tools proactively whenever they would help \
+when you need to see what's currently on screen. Use search_knowledge_base when the user references \
+something that sounds like a document they've uploaded to their account rather than a local file — it \
+requires a signed-in Pro/Ultra account and returns no matches otherwise, so don't insist on it if it \
+comes back empty. Use tools proactively whenever they would help \
 answer a request. Never claim you lack access to the file system, the terminal, the clipboard, \
 running processes, or the screen — you have it. Act like a normal, capable assistant: just do the \
 task. Only pause to ask before something destructive or irreversible (deleting data, killing an \
@@ -1000,6 +1104,7 @@ const TOOL_NAMES: &[&str] = &[
     "kill_process",
     "open_app",
     "send_notification",
+    "search_knowledge_base",
 ];
 
 /// Some weaker models (especially small local ones served through Ollama, or
@@ -1308,6 +1413,7 @@ async fn run_agent(
             let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
             let path = args["path"].as_str().unwrap_or(".");
             let command = args["command"].as_str().unwrap_or("");
+            let query = args["query"].as_str().unwrap_or("");
             let call_id = call["id"].as_str().unwrap_or("").to_string();
 
             let label = match name {
@@ -1326,6 +1432,9 @@ async fn run_agent(
                 }
                 "open_app" => format!("@@tool:open_app@@Launching `{command}`\n\n"),
                 "send_notification" => "@@tool:send_notification@@Sending notification\n\n".to_string(),
+                "search_knowledge_base" => {
+                    format!("@@tool:search_knowledge_base@@Searching knowledge base for \"{query}\"\n\n")
+                }
                 other => format!("@@tool:{other}@@Running `{other}`\n\n"),
             };
             emit_text(app, request_id, label);
@@ -1424,6 +1533,7 @@ async fn run_agent(
                         Err(e) => format!("Error sending notification: {e}"),
                     }
                 }
+                "search_knowledge_base" => tool_search_knowledge_base(&client, access_token, query).await,
                 other => format!("Unknown tool: {other}"),
                 }
             };
@@ -1703,10 +1813,14 @@ fn apply_windows_chrome(window: &tauri::WebviewWindow) {
 pub fn run() {
     // WebKitGTK's DMA-BUF renderer produces blurry/pixelated output on many
     // Linux Wayland setups (unlike Chromium-based apps). Must be set before
-    // GTK/WebKit initializes.
+    // GTK/WebKit initializes. Respect a caller-provided override (main.rs
+    // already does this check; mirrored here since this is also reachable
+    // directly, e.g. in tests).
     #[cfg(target_os = "linux")]
-    unsafe {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
     }
 
     #[allow(unused_mut)]
@@ -1854,8 +1968,23 @@ pub fn run() {
             set_minimize_to_tray,
             get_kiro_auto_model
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |_app_handle, _event| {
+            // macOS: clicking the dock icon while the window is hidden (e.g.
+            // minimized to tray) sends Reopen rather than relaunching the
+            // app — without this the window would stay hidden with no way
+            // back short of the tray menu.
+            #[cfg(target_os = "macos")]
+            {
+                if let tauri::RunEvent::Reopen { .. } = _event {
+                    if let Some(window) = _app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2027,5 +2156,23 @@ mod blocked_command_tests {
         assert!(is_blocked_command("npm install").is_none());
         assert!(is_blocked_command("git status").is_none());
         assert!(is_blocked_command("ls -la /").is_none());
+    }
+
+    #[test]
+    fn blocks_windows_drive_wipes() {
+        assert!(is_blocked_command("rd /s /q C:\\").is_some());
+        assert!(is_blocked_command("rmdir /s /q c:\\").is_some());
+        assert!(is_blocked_command("del /f /s /q C:\\").is_some());
+        assert!(is_blocked_command("diskpart").is_some());
+        assert!(is_blocked_command("format c:").is_some());
+        assert!(is_blocked_command("format D: /q").is_some());
+    }
+
+    #[test]
+    fn does_not_block_format_as_an_ordinary_word() {
+        assert!(is_blocked_command("npm run format").is_none());
+        assert!(is_blocked_command("npm run format -- --check").is_none());
+        assert!(is_blocked_command("cargo fmt --all").is_none());
+        assert!(is_blocked_command("Get-Process | Format-List").is_none());
     }
 }

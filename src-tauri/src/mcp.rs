@@ -43,11 +43,28 @@ pub(crate) struct McpConnection {
 #[derive(Default)]
 pub struct McpState(pub Mutex<HashMap<String, McpConnection>>);
 
+// On Windows, CreateProcess can't launch .cmd/.bat shims directly (the error
+// surfaces as "%1 is not a valid Win32 application") — most npm-installed
+// MCP servers resolve to `npx.cmd`, so spawning needs to go through cmd /C
+// there the same way shell_command() does for the run_command/open_app
+// tools. macOS/Linux servers are executables or shell scripts and run fine
+// via exec directly.
+fn build_mcp_command(command: &str, args: &[String]) -> Command {
+    if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(command).args(args);
+        cmd
+    } else {
+        let mut cmd = Command::new(command);
+        cmd.args(args);
+        cmd
+    }
+}
+
 pub async fn connect(state: &McpState, config: McpServerConfig) -> Result<Vec<McpToolInfo>, String> {
     let McpServerConfig { id, command, args, env } = config;
 
-    let transport = TokioChildProcess::new(Command::new(&command).configure(|cmd| {
-        cmd.args(&args);
+    let transport = TokioChildProcess::new(build_mcp_command(&command, &args).configure(|cmd| {
         for (key, value) in &env {
             cmd.env(key, value);
         }

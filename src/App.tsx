@@ -4,7 +4,6 @@ import type { Update } from "@tauri-apps/plugin-updater";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { isWindows } from "./lib/platform";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { Sidebar } from "./components/Sidebar";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -68,6 +67,7 @@ import type { SlashCommand } from "./lib/commands";
 import { loadRules, saveRules, rulesToPrompt } from "./lib/rules";
 import type { Rule } from "./lib/rules";
 import { PLAN_MODE_INSTRUCTION } from "./lib/agents";
+import { modShortcut } from "./lib/platform";
 import type { Conversation, FileChange, Message } from "./types";
 
 interface FileChangeEventPayload {
@@ -840,21 +840,21 @@ function App() {
       id: "new-chat",
       label: "New chat",
       icon: Plus,
-      shortcut: "⌘N",
+      shortcut: modShortcut("⌘N"),
       onRun: handleNew,
     },
     {
       id: "home",
       label: "Go home",
       icon: Home,
-      shortcut: "⌘H",
+      shortcut: modShortcut("⌘H"),
       onRun: handleGoHome,
     },
     {
       id: "search",
       label: "Search chats",
       icon: Search,
-      shortcut: "⌘K",
+      shortcut: modShortcut("⌘K"),
       onRun: () => {
         setSettingsOpen(false);
         setHistoryOpen(false);
@@ -866,21 +866,21 @@ function App() {
       id: "toggle-sidebar",
       label: sidebarOpen ? "Close sidebar" : "Open sidebar",
       icon: sidebarOpen ? PanelLeftClose : PanelLeft,
-      shortcut: "⌘B",
+      shortcut: modShortcut("⌘B"),
       onRun: () => setSidebarOpen((v) => !v),
     },
     {
       id: "settings",
       label: "Open settings",
       icon: SettingsIcon,
-      shortcut: "⌘,",
+      shortcut: modShortcut("⌘,"),
       onRun: () => setSettingsOpen(true),
     },
     {
       id: "open-history",
       label: "View changed files",
       icon: History,
-      shortcut: "⌘Y",
+      shortcut: modShortcut("⌘Y"),
       onRun: () => setHistoryOpen(true),
     },
     ...(activeId
@@ -889,7 +889,7 @@ function App() {
             id: "close-tab",
             label: "Close tab",
             icon: X,
-            shortcut: "⌘W",
+            shortcut: modShortcut("⌘W"),
             onRun: () => handleCloseTab(activeId),
           },
         ]
@@ -949,6 +949,11 @@ function App() {
         sidebarOpen={sidebarOpen}
         userEmail={session?.user.email ?? null}
         userAvatarUrl={session ? getUserAvatarUrl(session.user) : null}
+        userDisplayName={
+          (session?.user.user_metadata?.display_name as string | undefined)?.trim() || null
+        }
+        userId={session?.user.id ?? null}
+        accessToken={session?.access_token ?? null}
         plan={plan}
         isPro={isPro}
         onSignIn={() => {
@@ -1033,7 +1038,7 @@ function App() {
     );
   }
 
-  const rounded = isWindows && !maximized;
+  const rounded = !maximized;
 
   return (
     <div
