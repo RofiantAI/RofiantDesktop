@@ -29,9 +29,6 @@ import {
   Loader2,
   CircleCheck,
   CircleAlert,
-  BookOpen,
-  Upload,
-  FileText,
 } from "lucide-react";
 import { customModelId, customProviderIdFromModel, type CustomProvider } from "../lib/providers";
 import { DEFAULT_SETTINGS } from "../lib/settings";
@@ -50,16 +47,6 @@ import { useConfirmDialog } from "./ConfirmDialog";
 import { connectMcpServer, disconnectMcpServer, type McpServerConfig, type McpToolInfo } from "../lib/mcp";
 import { modShortcut } from "../lib/platform";
 import { supabase } from "../lib/supabase";
-import {
-  createKnowledgeBase,
-  deleteKnowledgeBase,
-  getKnowledgeBase,
-  listKnowledgeBases,
-  removeDocumentFromKnowledgeBase,
-  uploadDocumentToKnowledgeBase,
-  type KnowledgeBase,
-  type KnowledgeBaseDetail,
-} from "../lib/knowledgeBases";
 
 type Section =
   | "general"
@@ -67,7 +54,6 @@ type Section =
   | "models"
   | "agents"
   | "mcp"
-  | "knowledgeBases"
   | "appearance"
   | "profile"
   | "shortcuts"
@@ -83,7 +69,6 @@ const SECTION_GROUPS: { label: string; items: { id: Section; label: string; icon
       { id: "models", label: "Models", icon: Box },
       { id: "agents", label: "Agents", icon: Users },
       { id: "mcp", label: "MCP Servers", icon: Cable },
-      { id: "knowledgeBases", label: "Knowledge Bases", icon: BookOpen },
     ],
   },
   {
@@ -248,7 +233,6 @@ export function SettingsPage({
   userEmail,
   userAvatarUrl,
   userDisplayName,
-  userId,
   accessToken,
   plan,
   isPro,
@@ -265,7 +249,6 @@ export function SettingsPage({
   userEmail: string | null;
   userAvatarUrl: string | null;
   userDisplayName: string | null;
-  userId: string | null;
   accessToken: string | null;
   plan: string;
   isPro: boolean;
@@ -556,105 +539,6 @@ export function SettingsPage({
     const patch: Partial<AppSettings> = { agents: remaining };
     if (settings.activeAgentId === id) patch.activeAgentId = null;
     onChange(patch);
-  }
-
-  const [kbList, setKbList] = useState<KnowledgeBase[] | null>(null);
-  const [kbListError, setKbListError] = useState<string | null>(null);
-  const [selectedKbId, setSelectedKbId] = useState<string | null>(null);
-  const [kbDetail, setKbDetail] = useState<KnowledgeBaseDetail | null>(null);
-  const [kbDetailError, setKbDetailError] = useState<string | null>(null);
-  const [addKbOpen, setAddKbOpen] = useState(false);
-  const [newKb, setNewKb] = useState({ name: "", description: "" });
-  const [creatingKb, setCreatingKb] = useState(false);
-  const [uploadingDoc, setUploadingDoc] = useState(false);
-  const kbFileInputRef = useRef<HTMLInputElement | null>(null);
-
-  function refreshKbList() {
-    if (!accessToken) return;
-    setKbListError(null);
-    listKnowledgeBases(accessToken)
-      .then(setKbList)
-      .catch((err) => setKbListError(err instanceof Error ? err.message : String(err)));
-  }
-
-  function refreshKbDetail(id: string) {
-    if (!accessToken) return;
-    setKbDetailError(null);
-    getKnowledgeBase(id, accessToken)
-      .then(setKbDetail)
-      .catch((err) => setKbDetailError(err instanceof Error ? err.message : String(err)));
-  }
-
-  useEffect(() => {
-    if (section !== "knowledgeBases" || !isPro || !accessToken) return;
-    refreshKbList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, isPro, accessToken]);
-
-  useEffect(() => {
-    if (!selectedKbId || !accessToken) return;
-    refreshKbDetail(selectedKbId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedKbId, accessToken]);
-
-  async function handleCreateKb() {
-    if (!accessToken || !newKb.name.trim() || creatingKb) return;
-    setCreatingKb(true);
-    try {
-      await createKnowledgeBase(newKb.name.trim(), newKb.description.trim(), accessToken);
-      setNewKb({ name: "", description: "" });
-      setAddKbOpen(false);
-      refreshKbList();
-    } catch (err) {
-      setKbListError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCreatingKb(false);
-    }
-  }
-
-  async function handleDeleteKb(kb: KnowledgeBase) {
-    if (!accessToken) return;
-    const ok = await confirm({
-      title: `Delete "${kb.name}"?`,
-      description: "This removes the knowledge base. The documents in it stay in your library.",
-      confirmLabel: "Delete",
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await deleteKnowledgeBase(kb.id, accessToken);
-      if (selectedKbId === kb.id) setSelectedKbId(null);
-      refreshKbList();
-    } catch (err) {
-      setKbListError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function handleUploadFiles(files: FileList | null) {
-    if (!files || !accessToken || !userId || !selectedKbId) return;
-    setUploadingDoc(true);
-    try {
-      for (const file of Array.from(files)) {
-        await uploadDocumentToKnowledgeBase(selectedKbId, file, userId, accessToken);
-      }
-      refreshKbDetail(selectedKbId);
-      refreshKbList();
-    } catch (err) {
-      setKbDetailError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setUploadingDoc(false);
-    }
-  }
-
-  async function handleRemoveDocument(documentId: string) {
-    if (!accessToken || !selectedKbId) return;
-    try {
-      await removeDocumentFromKnowledgeBase(selectedKbId, documentId, accessToken);
-      refreshKbDetail(selectedKbId);
-      refreshKbList();
-    } catch (err) {
-      setKbDetailError(err instanceof Error ? err.message : String(err));
-    }
   }
 
   return (
@@ -1188,261 +1072,6 @@ export function SettingsPage({
                       </button>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {section === "knowledgeBases" && (
-            <div>
-              {!accessToken ? (
-                <div>
-                  <h1 className="text-[18px] font-bold mb-2">Knowledge Bases</h1>
-                  <p className="text-[13px] text-foreground-muted mb-6">
-                    Sign in to create a knowledge base and reference your documents from chat.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={onSignIn}
-                    className="h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition-opacity"
-                  >
-                    Sign in
-                  </button>
-                </div>
-              ) : !isPro ? (
-                <div>
-                  <h1 className="text-[18px] font-bold mb-2">Knowledge Bases</h1>
-                  <p className="text-[13px] text-foreground-muted mb-6">
-                    Upload documents into a named knowledge base and Rofiant can search them from
-                    any chat. Requires Pro or Ultra.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => void openUrl("https://rofiant.ca/pricing")}
-                    className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent-primary text-white text-[13px] font-medium hover:opacity-90 transition-opacity"
-                  >
-                    <Zap className="w-3.5 h-3.5" />
-                    Upgrade to Pro
-                  </button>
-                </div>
-              ) : selectedKbId ? (
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedKbId(null);
-                      setKbDetail(null);
-                    }}
-                    className="flex items-center gap-1.5 text-[13px] text-foreground-secondary hover:text-foreground transition-colors mb-4"
-                  >
-                    <ArrowLeft className="w-3.5 h-3.5" />
-                    Knowledge Bases
-                  </button>
-
-                  {kbDetail && kbDetail.id === selectedKbId ? (
-                    <>
-                      <div className="flex items-start justify-between gap-4 mb-6">
-                        <div className="min-w-0">
-                          <h1 className="text-[18px] font-bold mb-1 truncate">{kbDetail.name}</h1>
-                          {kbDetail.description && (
-                            <p className="text-[13px] text-foreground-muted">{kbDetail.description}</p>
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => kbFileInputRef.current?.click()}
-                          disabled={uploadingDoc || !userId}
-                          className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity shrink-0"
-                        >
-                          {uploadingDoc ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Upload className="w-3.5 h-3.5" />
-                          )}
-                          {uploadingDoc ? "Uploading…" : "Add file"}
-                        </button>
-                        <input
-                          ref={kbFileInputRef}
-                          type="file"
-                          multiple
-                          className="hidden"
-                          onChange={(e) => {
-                            void handleUploadFiles(e.target.files);
-                            e.target.value = "";
-                          }}
-                        />
-                      </div>
-
-                      {kbDetailError && (
-                        <div className="mb-4 text-[12px] text-red-600">{kbDetailError}</div>
-                      )}
-
-                      {kbDetail.knowledge_base_documents.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8">
-                          <FileText className="w-5 h-5 text-foreground-muted mb-2" />
-                          <div className="text-[13px] text-foreground-secondary">No documents yet</div>
-                          <div className="text-[12px] text-foreground-muted mt-0.5">
-                            Add a file so Rofiant can search it from chat.
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-1.5">
-                          {kbDetail.knowledge_base_documents.map((kbDoc) => (
-                            <div
-                              key={kbDoc.id}
-                              className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-border"
-                            >
-                              <div className="min-w-0 flex items-center gap-2">
-                                <FileText className="w-3.5 h-3.5 text-foreground-muted shrink-0" />
-                                <span className="text-sm text-foreground truncate">
-                                  {kbDoc.documents?.name ?? "Untitled document"}
-                                </span>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => void handleRemoveDocument(kbDoc.document_id)}
-                                title="Remove from knowledge base"
-                                className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  ) : kbDetailError ? (
-                    <div className="text-[13px] text-red-600">{kbDetailError}</div>
-                  ) : (
-                    <div className="text-[13px] text-foreground-muted">Loading…</div>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <div className="flex items-start justify-between gap-4 mb-6">
-                    <div>
-                      <h1 className="text-[18px] font-bold mb-2">Knowledge Bases</h1>
-                      <p className="text-[13px] text-foreground-muted">
-                        Named collections of documents Rofiant can search from any chat. Files are
-                        stored and indexed on your account, not just this device.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setAddKbOpen(true)}
-                      className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition-opacity shrink-0"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      New knowledge base
-                    </button>
-                  </div>
-
-                  {kbListError && <div className="mb-4 text-[12px] text-red-600">{kbListError}</div>}
-
-                  {kbList === null ? (
-                    <div className="text-[13px] text-foreground-muted">Loading…</div>
-                  ) : kbList.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8">
-                      <BookOpen className="w-5 h-5 text-foreground-muted mb-2" />
-                      <div className="text-[13px] text-foreground-secondary">No knowledge bases yet</div>
-                      <div className="text-[12px] text-foreground-muted mt-0.5">
-                        Create one and add documents Rofiant can reference from chat.
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-1.5">
-                      {kbList.map((kb) => {
-                        const count = kb.knowledge_base_documents?.[0]?.count ?? 0;
-                        return (
-                          <div
-                            key={kb.id}
-                            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-border"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => setSelectedKbId(kb.id)}
-                              className="min-w-0 text-left flex-1"
-                            >
-                              <span className="text-sm text-foreground font-medium truncate block">
-                                {kb.name}
-                              </span>
-                              <span className="block text-xs text-foreground-muted truncate">
-                                {count} document{count === 1 ? "" : "s"}
-                                {kb.description ? ` · ${kb.description}` : ""}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteKb(kb)}
-                              title="Delete knowledge base"
-                              className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {addKbOpen && (
-                    <div
-                      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 animate-[fadeIn_150ms_ease-out]"
-                      onClick={() => setAddKbOpen(false)}
-                    >
-                      <div
-                        role="dialog"
-                        aria-modal="true"
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full max-w-sm rounded-lg border border-border bg-background shadow-xl p-4 space-y-2.5 animate-[modalIn_180ms_ease-out]"
-                      >
-                        <div className="flex items-center justify-between mb-0.5">
-                          <div className="text-[13px] font-medium text-foreground">
-                            New knowledge base
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setAddKbOpen(false)}
-                            title="Close"
-                            className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        <input
-                          autoFocus
-                          value={newKb.name}
-                          onChange={(e) => setNewKb((s) => ({ ...s, name: e.target.value }))}
-                          placeholder="Name (e.g. Client contracts)"
-                          className="w-full h-8 px-2.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light"
-                        />
-                        <textarea
-                          value={newKb.description}
-                          onChange={(e) => setNewKb((s) => ({ ...s, description: e.target.value }))}
-                          placeholder="Description (optional)"
-                          rows={2}
-                          className="w-full px-2.5 py-1.5 rounded-md bg-card border border-border text-[13px] text-foreground placeholder:text-foreground-muted outline-none focus:border-border-light resize-none"
-                        />
-                        <div className="flex justify-end gap-2 pt-1">
-                          <button
-                            type="button"
-                            onClick={() => setAddKbOpen(false)}
-                            className="h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleCreateKb}
-                            disabled={!newKb.name.trim() || creatingKb}
-                            className="h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-                          >
-                            {creatingKb ? "Creating…" : "Create"}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </div>

@@ -18,11 +18,6 @@ const NEWS_ITEMS: NewsItem[] = [
     title: "Automatic model failover",
     description: "If a model errors out, Rofiant retries with a backup model automatically.",
   },
-  {
-    id: "knowledge-bases",
-    title: "Knowledge Bases",
-    description: "Upload documents into named collections and reference them from any chat.",
-  },
 ];
 
 const STORAGE_KEY = "rofiant_dismissed_news";

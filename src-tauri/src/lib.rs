@@ -642,66 +642,6 @@ fn tool_open_app(command: &str) -> String {
     }
 }
 
-const ROFIANT_DOCUMENT_SEARCH_URL: &str = "https://rofiant.ca/api/documents/search";
-
-/// Searches the user's cloud-hosted knowledge-base documents by keyword.
-/// Requires a signed-in Pro/Ultra user with indexed documents — an empty or
-/// unauthenticated result set just comes back as "No matches.", not an error,
-/// since a Free user or signed-out user simply has nothing to search yet.
-async fn tool_search_knowledge_base(client: &reqwest::Client, access_token: &str, query: &str) -> String {
-    if access_token.is_empty() {
-        return "Sign in to your Rofiant account to search your knowledge base.".to_string();
-    }
-    if query.trim().is_empty() {
-        return "Provide a search query.".to_string();
-    }
-
-    let response = match client
-        .get(ROFIANT_DOCUMENT_SEARCH_URL)
-        .bearer_auth(access_token)
-        .query(&[("q", query)])
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return format!("Error reaching the knowledge base: {e}"),
-    };
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return format!("Knowledge base search failed ({status}): {text}");
-    }
-
-    let data: Value = match response.json().await {
-        Ok(v) => v,
-        Err(e) => return format!("Error parsing knowledge base response: {e}"),
-    };
-
-    let results = data["results"].as_array().cloned().unwrap_or_default();
-    if results.is_empty() {
-        return "No matches in the knowledge base.".to_string();
-    }
-
-    let mut out = String::new();
-    for r in &results {
-        let name = r["name"].as_str().unwrap_or("Untitled document");
-        out.push_str(&format!("## {name}\n"));
-        if let Some(summary) = r["summary"].as_str().filter(|s| !s.is_empty()) {
-            out.push_str(&format!("Summary: {summary}\n"));
-        }
-        if let Some(excerpts) = r["excerpts"].as_array() {
-            for excerpt in excerpts {
-                if let Some(text) = excerpt.as_str() {
-                    out.push_str(&format!("> {text}\n"));
-                }
-            }
-        }
-        out.push('\n');
-    }
-    out
-}
-
 fn tools_schema() -> Value {
     json!([
         {
@@ -905,20 +845,6 @@ fn tools_schema() -> Value {
                     "required": ["title", "body"]
                 }
             }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_knowledge_base",
-                "description": "Search the user's knowledge bases (documents they've uploaded to their Rofiant account on Pro/Ultra) by keyword. Returns matching document names, summaries, and text excerpts. Requires the user to be signed in with a Pro or Ultra plan and to have uploaded documents; returns no results otherwise.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Keywords to search for across the user's uploaded documents." }
-                    },
-                    "required": ["query"]
-                }
-            }
         }
     ])
 }
@@ -928,18 +854,14 @@ fn system_prompt() -> String {
     format!(
         "You are Rofiant, an AI assistant with real, direct access to the user's computer through \
 tools: list_directory, read_file, write_file, edit_file, run_command, get_clipboard, set_clipboard, \
-take_screenshot, list_processes, kill_process, open_app, send_notification, and search_knowledge_base. \
-These are not simulations — they execute for real on the user's machine (except search_knowledge_base, \
-which searches documents the user has uploaded to their Rofiant account on the cloud, not local files). \
+take_screenshot, list_processes, kill_process, open_app, and send_notification. \
+These are not simulations — they execute for real on the user's machine. \
 The user's home directory is exactly \
 `{home}`. Use paths relative to it (e.g. 'Desktop/notes.txt') or prefixed with '~/' — never guess \
 a literal username like /home/user/... or /Users/username/..., since it will resolve to the wrong \
 place or fail with a permission error. Prefer open_app over run_command for launching GUI \
 applications, since run_command waits for the process to exit and will hang. Use take_screenshot \
-when you need to see what's currently on screen. Use search_knowledge_base when the user references \
-something that sounds like a document they've uploaded to their account rather than a local file — it \
-requires a signed-in Pro/Ultra account and returns no matches otherwise, so don't insist on it if it \
-comes back empty. Use tools proactively whenever they would help \
+when you need to see what's currently on screen. Use tools proactively whenever they would help \
 answer a request. Never claim you lack access to the file system, the terminal, the clipboard, \
 running processes, or the screen — you have it. Act like a normal, capable assistant: just do the \
 task. Only pause to ask before something destructive or irreversible (deleting data, killing an \
@@ -1104,7 +1026,6 @@ const TOOL_NAMES: &[&str] = &[
     "kill_process",
     "open_app",
     "send_notification",
-    "search_knowledge_base",
 ];
 
 /// Some weaker models (especially small local ones served through Ollama, or
@@ -1413,7 +1334,6 @@ async fn run_agent(
             let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
             let path = args["path"].as_str().unwrap_or(".");
             let command = args["command"].as_str().unwrap_or("");
-            let query = args["query"].as_str().unwrap_or("");
             let call_id = call["id"].as_str().unwrap_or("").to_string();
 
             let label = match name {
@@ -1432,9 +1352,6 @@ async fn run_agent(
                 }
                 "open_app" => format!("@@tool:open_app@@Launching `{command}`\n\n"),
                 "send_notification" => "@@tool:send_notification@@Sending notification\n\n".to_string(),
-                "search_knowledge_base" => {
-                    format!("@@tool:search_knowledge_base@@Searching knowledge base for \"{query}\"\n\n")
-                }
                 other => format!("@@tool:{other}@@Running `{other}`\n\n"),
             };
             emit_text(app, request_id, label);
@@ -1533,7 +1450,6 @@ async fn run_agent(
                         Err(e) => format!("Error sending notification: {e}"),
                     }
                 }
-                "search_knowledge_base" => tool_search_knowledge_base(&client, access_token, query).await,
                 other => format!("Unknown tool: {other}"),
                 }
             };

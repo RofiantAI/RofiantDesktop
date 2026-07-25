@@ -952,7 +952,6 @@ function App() {
         userDisplayName={
           (session?.user.user_metadata?.display_name as string | undefined)?.trim() || null
         }
-        userId={session?.user.id ?? null}
         accessToken={session?.access_token ?? null}
         plan={plan}
         isPro={isPro}
