@@ -68,6 +68,7 @@ import { loadRules, saveRules, rulesToPrompt } from "./lib/rules";
 import type { Rule } from "./lib/rules";
 import { PLAN_MODE_INSTRUCTION } from "./lib/agents";
 import { modShortcut } from "./lib/platform";
+import { parseAuthRedirect } from "./lib/auth-redirect";
 import type { Conversation, FileChange, Message } from "./types";
 
 interface FileChangeEventPayload {
@@ -182,46 +183,34 @@ function App() {
   useEffect(() => {
     async function completeAuthRedirect(urls: string[]) {
       for (const raw of urls) {
-        let parsed: URL;
-        try {
-          parsed = new URL(raw);
-        } catch {
-          continue;
-        }
-        const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ""));
-        const oauthError =
-          parsed.searchParams.get("error_description") ??
-          parsed.searchParams.get("error") ??
-          hashParams.get("error_description") ??
-          hashParams.get("error");
-        if (oauthError) {
-          console.error("Sign-in redirect failed:", oauthError);
-          track("auth_redirect_failed");
-          continue;
-        }
-
-        // Website signup (ROFIANT_SIGNUP_URL) hands back tokens directly.
-        const accessToken = hashParams.get("access_token") ?? parsed.searchParams.get("access_token");
-        const refreshToken = hashParams.get("refresh_token") ?? parsed.searchParams.get("refresh_token");
-        if (accessToken && refreshToken) {
-          const { error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-          if (error) {
-            console.error("Failed to apply session from signup redirect:", error);
+        const result = parseAuthRedirect(raw);
+        switch (result.type) {
+          case "invalid":
+          case "none":
+            continue;
+          case "error":
+            console.error("Sign-in redirect failed:", result.message);
             track("auth_redirect_failed");
+            continue;
+          case "tokens": {
+            const { error } = await supabase.auth.setSession({
+              access_token: result.accessToken,
+              refresh_token: result.refreshToken,
+            });
+            if (error) {
+              console.error("Failed to apply session from signup redirect:", error);
+              track("auth_redirect_failed");
+            }
+            continue;
           }
-          continue;
-        }
-
-        // Google OAuth (PKCE) hands back a code to exchange instead.
-        const code = parsed.searchParams.get("code");
-        if (!code) continue;
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
-        if (error) {
-          console.error("Failed to complete Google sign-in:", error);
-          track("google_signin_failed");
+          case "code": {
+            const { error } = await supabase.auth.exchangeCodeForSession(result.code);
+            if (error) {
+              console.error("Failed to complete Google sign-in:", error);
+              track("google_signin_failed");
+            }
+            continue;
+          }
         }
       }
     }
