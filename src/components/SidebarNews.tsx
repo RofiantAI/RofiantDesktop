@@ -62,6 +62,7 @@ export function SidebarNews() {
             type="button"
             onClick={() => dismiss(item.id)}
             title="Dismiss"
+            aria-label={`Dismiss ${item.title}`}
             className="absolute top-1.5 right-1.5 flex items-center justify-center w-4 h-4 rounded text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
           >
             <X className="w-3 h-3" />

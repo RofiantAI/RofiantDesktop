@@ -99,6 +99,7 @@ export function TitleBar({
           type="button"
           onClick={onToggleSidebar}
           title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
           className="flex items-center justify-center w-5 h-5 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
         >
           {sidebarOpen ? (

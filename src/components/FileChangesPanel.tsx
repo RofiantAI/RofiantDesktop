@@ -131,6 +131,8 @@ export function FileChangesPanel({
         <button
           type="button"
           onClick={onClose}
+          title="Close"
+          aria-label="Close changed files panel"
           className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
         >
           <X className="w-3.5 h-3.5" />

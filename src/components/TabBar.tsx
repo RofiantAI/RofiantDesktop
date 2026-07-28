@@ -31,6 +31,7 @@ export function TabBar({
           type="button"
           onClick={onNew}
           title="New chat"
+          aria-label="New chat"
           className="flex items-center justify-center w-9 h-11 shrink-0 text-foreground-muted hover:text-foreground transition-colors"
         >
           <Plus className="w-4 h-4" />
@@ -77,6 +78,7 @@ export function TabBar({
           type="button"
           onClick={onNew}
           title="New chat tab"
+          aria-label="New chat tab"
           className="flex items-center justify-center w-7 h-7 rounded-md shrink-0 text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -87,6 +89,7 @@ export function TabBar({
         type="button"
         onClick={onOpenHistory}
         title="Change history"
+        aria-label="Change history"
         className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
       >
         <RotateCcw className="w-3.5 h-3.5" />
@@ -95,6 +98,7 @@ export function TabBar({
         type="button"
         onClick={onToggleFilesPanel}
         title="Changed files"
+        aria-label="Changed files"
         className={`relative flex items-center justify-center w-7 h-7 rounded-md transition-colors ${
           filesPanelOpen
             ? "bg-background-tertiary text-foreground"

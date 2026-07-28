@@ -34,6 +34,7 @@ export function ChangeHistoryPage({
             type="button"
             onClick={onClose}
             title="Back"
+            aria-label="Back"
             className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
           >
             <ArrowLeft className="w-4 h-4" />
@@ -56,6 +57,7 @@ export function ChangeHistoryPage({
               if (ok) onClear();
             }}
             title="Clear history"
+            aria-label="Clear history"
             disabled={changes.length === 0}
             className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors disabled:opacity-30 disabled:pointer-events-none"
           >

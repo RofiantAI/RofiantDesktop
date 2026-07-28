@@ -1,28 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  ArrowUp,
-  Plus,
-  ChevronDown,
-  Check,
-  Lock,
-  X,
-  Terminal,
-  Square,
-  Mic,
-  Loader2,
-  ListChecks,
-  MessageCircle,
-  Bot,
-  TriangleAlert,
-  ShieldOff,
-} from "lucide-react";
-import { ALL_MODELS, isLogfareModel, isProModel, isVisionModel, VISION_MODEL_ID } from "../lib/models";
-import { customModelId, type CustomProvider } from "../lib/providers";
+import { ArrowUp, Plus, X, Terminal, Square, Mic, Loader2 } from "lucide-react";
+import { isVisionModel, VISION_MODEL_ID } from "../lib/models";
+import type { CustomProvider } from "../lib/providers";
 import { readImageFile } from "../lib/image";
 import { SLASH_COMMANDS } from "../lib/commands";
-import { getKiroAutoModel, transcribeAudio } from "../lib/groq";
+import { useVoiceRecording } from "../lib/useVoiceRecording";
 import type { SendKey } from "../lib/settings";
 import type { Agent, ChatMode } from "../lib/agents";
+import { ModeMenu } from "./composer/ModeMenu";
+import { ModelPicker } from "./composer/ModelPicker";
 
 export function Composer({
   disabled,
@@ -60,33 +46,19 @@ export function Composer({
   onAgentChange: (agentId: string | null) => void;
 }) {
   const [value, setValue] = useState("");
-  const [modelOpen, setModelOpen] = useState(false);
-  const [modeOpen, setModeOpen] = useState(false);
   const [image, setImage] = useState<string | null>(null);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [logfareTooltipRect, setLogfareTooltipRect] = useState<DOMRect | null>(null);
-  const [kiroAutoModel, setKiroAutoModel] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const modelRef = useRef<HTMLDivElement>(null);
-  const modeRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const isRecordingRef = useRef(false);
-  const transcribeChainRef = useRef<Promise<void>>(Promise.resolve());
-  const segmentTimeoutRef = useRef<number | null>(null);
-  const SEGMENT_MS = 3000;
 
-  useEffect(() => {
-    return () => {
-      if (isRecordingRef.current) stopRecording();
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-    };
-  }, []);
+  const { isRecording, isTranscribing, voiceError, setVoiceError, toggleRecording } = useVoiceRecording(
+    accessToken,
+    (text) => {
+      setValue((v) => (v ? `${v} ${text}` : text));
+      ref.current?.focus();
+    },
+  );
 
   const commandMatches = value.startsWith("/")
     ? SLASH_COMMANDS.filter((c) => c.cmd.toLowerCase().startsWith(value.toLowerCase()))
@@ -102,38 +74,6 @@ export function Composer({
     setValue(next);
     ref.current?.focus();
   }
-
-  useEffect(() => {
-    if (!modelOpen) return;
-    function handleClick(e: MouseEvent) {
-      if (modelRef.current && !modelRef.current.contains(e.target as Node)) {
-        setModelOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [modelOpen]);
-
-  useEffect(() => {
-    if (!modelOpen) {
-      setLogfareTooltipRect(null);
-      return;
-    }
-    getKiroAutoModel()
-      .then(setKiroAutoModel)
-      .catch(() => setKiroAutoModel(null));
-  }, [modelOpen]);
-
-  useEffect(() => {
-    if (!modeOpen) return;
-    function handleClick(e: MouseEvent) {
-      if (modeRef.current && !modeRef.current.contains(e.target as Node)) {
-        setModeOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [modeOpen]);
 
   async function attachFile(file: File) {
     const result = await readImageFile(file);
@@ -161,105 +101,6 @@ export function Composer({
     void attachFile(file);
   }
 
-  function blobToBase64(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        resolve(result.slice(result.indexOf(",") + 1));
-      };
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  async function transcribeSegment(blob: Blob, mimeType: string, isFinal: boolean) {
-    if (blob.size === 0) return;
-    if (!accessToken) return;
-    if (isFinal) setIsTranscribing(true);
-    try {
-      const base64 = await blobToBase64(blob);
-      const text = await transcribeAudio(base64, mimeType, accessToken);
-      if (text) {
-        setValue((v) => (v ? `${v} ${text}` : text));
-        ref.current?.focus();
-      }
-    } catch (err) {
-      const message =
-        typeof err === "string" ? err : err instanceof Error ? err.message : "Transcription failed";
-      console.error("transcribe failed", err);
-      setVoiceError(message);
-    } finally {
-      if (isFinal) setIsTranscribing(false);
-    }
-  }
-
-  function runSegment() {
-    const stream = streamRef.current;
-    if (!stream || !isRecordingRef.current) return;
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/ogg";
-    const recorder = new MediaRecorder(stream, { mimeType });
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
-    recorder.onstop = () => {
-      const isFinal = !isRecordingRef.current;
-      if (!isFinal) runSegment();
-      const blob = new Blob(chunks, { type: mimeType });
-      transcribeChainRef.current = transcribeChainRef.current.then(() =>
-        transcribeSegment(blob, mimeType, isFinal)
-      );
-      if (isFinal) {
-        void transcribeChainRef.current.then(() => {
-          stream.getTracks().forEach((t) => t.stop());
-          streamRef.current = null;
-        });
-      }
-    };
-    mediaRecorderRef.current = recorder;
-    recorder.start();
-    segmentTimeoutRef.current = window.setTimeout(() => {
-      if (recorder.state !== "inactive") recorder.stop();
-    }, SEGMENT_MS);
-  }
-
-  async function startRecording() {
-    setVoiceError(null);
-    if (!accessToken) {
-      setVoiceError("Sign in to use voice input");
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      isRecordingRef.current = true;
-      transcribeChainRef.current = Promise.resolve();
-      setIsRecording(true);
-      runSegment();
-    } catch {
-      setVoiceError("Microphone access denied");
-    }
-  }
-
-  function stopRecording() {
-    isRecordingRef.current = false;
-    setIsRecording(false);
-    if (segmentTimeoutRef.current !== null) {
-      window.clearTimeout(segmentTimeoutRef.current);
-      segmentTimeoutRef.current = null;
-    }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
-    mediaRecorderRef.current = null;
-  }
-
-  function toggleRecording() {
-    if (isRecording) stopRecording();
-    else void startRecording();
-  }
-
   function submit() {
     const trimmed = value.trim();
     if ((!trimmed && !image) || disabled) return;
@@ -270,23 +111,10 @@ export function Composer({
     if (ref.current) ref.current.style.height = "auto";
   }
 
-  const activeModel = ALL_MODELS.find((m) => m.id === model);
-  const activeCustomProvider = customProviders.find((p) => customModelId(p.id) === model);
-  const activeAgent = agents.find((a) => a.id === activeAgentId) ?? null;
-  const modeLabel = activeAgent
-    ? activeAgent.name
-    : mode === "plan"
-      ? "Plan"
-      : mode === "skip-permissions"
-        ? "Skip permissions"
-        : "Ask";
-  const ModeIcon = activeAgent
-    ? Bot
-    : mode === "plan"
-      ? ListChecks
-      : mode === "skip-permissions"
-        ? ShieldOff
-        : MessageCircle;
+  function selectModel(id: string) {
+    onModelChange(id);
+    if (image && !isVisionModel(id)) setImage(null);
+  }
 
   return (
     <div className="shrink-0 px-6 pb-5 pt-1">
@@ -319,6 +147,7 @@ export function Composer({
                 type="button"
                 onClick={() => setImage(null)}
                 title="Remove image"
+                aria-label="Remove image"
                 className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-4 h-4 rounded-full bg-foreground text-background"
               >
                 <X className="w-2.5 h-2.5" />
@@ -333,6 +162,7 @@ export function Composer({
               type="button"
               onClick={() => setAttachError(null)}
               title="Dismiss"
+              aria-label="Dismiss attachment error"
               className="shrink-0 text-red-500/70 hover:text-red-500"
             >
               <X className="w-3 h-3" />
@@ -346,6 +176,7 @@ export function Composer({
               type="button"
               onClick={() => setVoiceError(null)}
               title="Dismiss"
+              aria-label="Dismiss voice error"
               className="shrink-0 text-red-500/70 hover:text-red-500"
             >
               <X className="w-3 h-3" />
@@ -365,6 +196,7 @@ export function Composer({
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors shrink-0"
             title="Attach"
+            aria-label="Attach image"
           >
             <Plus className="w-4 h-4" />
           </button>
@@ -415,227 +247,26 @@ export function Composer({
         </div>
         <div className="flex items-center justify-between px-3 pb-2 pt-1">
           <div className="flex items-center gap-3 min-w-0">
-          <div className="relative" ref={modeRef}>
-            <button
-              type="button"
-              onClick={() => setModeOpen((v) => !v)}
-              className="flex items-center gap-1 text-[12px] text-foreground-muted hover:text-foreground transition-colors"
-            >
-              <ModeIcon className="w-3 h-3" />
-              {modeLabel}
-              <ChevronDown className="w-3 h-3" />
-            </button>
-            {modeOpen && (
-              <div className="absolute bottom-full left-0 mb-2 w-56 rounded-lg border border-border bg-card shadow-lg py-1 px-0.5 z-10">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onModeChange("ask");
-                    onAgentChange(null);
-                    setModeOpen(false);
-                  }}
-                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary rounded-md"
-                >
-                  <span className="flex items-center gap-2">
-                    <MessageCircle className="w-3.5 h-3.5 text-foreground-muted" />
-                    <span>
-                      <span className="block text-[13px] text-foreground font-medium leading-tight">Ask</span>
-                      <span className="block text-[11px] text-foreground-muted leading-tight">Normal chat</span>
-                    </span>
-                  </span>
-                  {mode === "ask" && !activeAgent && (
-                    <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onModeChange("plan");
-                    onAgentChange(null);
-                    setModeOpen(false);
-                  }}
-                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary rounded-md"
-                >
-                  <span className="flex items-center gap-2">
-                    <ListChecks className="w-3.5 h-3.5 text-foreground-muted" />
-                    <span>
-                      <span className="block text-[13px] text-foreground font-medium leading-tight">Plan</span>
-                      <span className="block text-[11px] text-foreground-muted leading-tight">
-                        Outline steps before acting
-                      </span>
-                    </span>
-                  </span>
-                  {mode === "plan" && !activeAgent && (
-                    <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onModeChange("skip-permissions");
-                    onAgentChange(null);
-                    setModeOpen(false);
-                  }}
-                  className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary rounded-md"
-                >
-                  <span className="flex items-center gap-2">
-                    <ShieldOff className="w-3.5 h-3.5 text-foreground-muted" />
-                    <span>
-                      <span className="block text-[13px] text-foreground font-medium leading-tight">
-                        Skip permissions
-                      </span>
-                      <span className="block text-[11px] text-foreground-muted leading-tight">
-                        Run tools without asking to approve
-                      </span>
-                    </span>
-                  </span>
-                  {mode === "skip-permissions" && !activeAgent && (
-                    <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />
-                  )}
-                </button>
-                {agents.length > 0 && (
-                  <>
-                    <div className="my-1 border-t border-border" />
-                    <div className="px-3 pt-1 pb-0.5 text-[10px] font-medium text-foreground-muted uppercase tracking-wide">
-                      Agents
-                    </div>
-                    <div className="max-h-40 overflow-y-auto">
-                      {agents.map((a) => (
-                        <button
-                          key={a.id}
-                          type="button"
-                          onClick={() => {
-                            onAgentChange(a.id);
-                            setModeOpen(false);
-                          }}
-                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary"
-                        >
-                          <span className="flex items-center gap-2 min-w-0">
-                            <Bot className="w-3.5 h-3.5 text-foreground-muted shrink-0" />
-                            <span className="text-[13px] text-foreground font-medium truncate">
-                              {a.name}
-                            </span>
-                          </span>
-                          {activeAgentId === a.id && (
-                            <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="relative" ref={modelRef}>
-            <button
-              type="button"
-              onClick={() => setModelOpen((v) => !v)}
-              className="flex items-center gap-1 text-[12px] text-foreground-muted hover:text-foreground transition-colors"
-            >
-              {activeModel?.name ?? activeCustomProvider?.name ?? "Select model"}
-              <ChevronDown className="w-3 h-3" />
-            </button>
-            {modelOpen && (
-              <div className="absolute bottom-full left-0 mb-2 w-64 max-h-[70vh] overflow-y-auto rounded-lg border border-border bg-card shadow-lg py-1 z-10">
-                {customProviders.length > 0 && (
-                  <div className="max-h-40 overflow-y-auto">
-                    {customProviders.map((p) => {
-                      const id = customModelId(p.id);
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => {
-                            onModelChange(id);
-                            setModelOpen(false);
-                          }}
-                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary"
-                        >
-                          <span>
-                            <span className="text-[13px] text-foreground font-medium">{p.name}</span>
-                            <span className="block text-[11px] text-foreground-muted">{p.model}</span>
-                          </span>
-                          {model === id && <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />}
-                        </button>
-                      );
-                    })}
-                    <div className="my-1 border-t border-border" />
-                  </div>
-                )}
-                {ALL_MODELS.map((m) => {
-                  const locked = !isPro && isProModel(m.id);
-                  return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      disabled={locked}
-                      onClick={() => {
-                        onModelChange(m.id);
-                        setModelOpen(false);
-                        if (image && !isVisionModel(m.id)) setImage(null);
-                      }}
-                      className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors ${
-                        locked ? "opacity-60 cursor-not-allowed" : "hover:bg-background-tertiary"
-                      }`}
-                    >
-                      <span>
-                        <span className="flex items-center gap-1.5">
-                          <span className="text-[13px] text-foreground font-medium">{m.name}</span>
-                          {locked && (
-                            <span className="flex items-center gap-0.5 text-[10px] font-medium text-foreground-muted bg-background-tertiary border border-border rounded px-1 py-0.5">
-                              <Lock className="w-2.5 h-2.5" />
-                              Pro
-                            </span>
-                          )}
-                          {isLogfareModel(m.id) && (
-                            <span
-                              title="Free community-run inference — uptime isn't guaranteed and requests may fail"
-                              onMouseEnter={(e) => setLogfareTooltipRect(e.currentTarget.getBoundingClientRect())}
-                              onMouseLeave={() => setLogfareTooltipRect(null)}
-                              className="flex items-center gap-0.5 text-[10px] font-medium text-accent-warning bg-accent-warning/10 border border-accent-warning/30 rounded px-1 py-0.5"
-                            >
-                              <TriangleAlert className="w-2.5 h-2.5" />
-                              Unstable
-                            </span>
-                          )}
-                        </span>
-                        <span className="block text-[11px] text-foreground-muted">
-                          {isLogfareModel(m.id) && kiroAutoModel
-                            ? `Currently routing to ${kiroAutoModel}`
-                            : m.desc}
-                        </span>
-                      </span>
-                      {!locked && model === m.id && (
-                        <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {logfareTooltipRect && (
-              <div
-                role="tooltip"
-                style={{
-                  position: "fixed",
-                  top: logfareTooltipRect.top - 8,
-                  left: logfareTooltipRect.left + logfareTooltipRect.width / 2,
-                  transform: "translate(-50%, -100%)",
-                }}
-                className="z-50 w-56 pointer-events-none rounded-md border border-border bg-card px-2.5 py-1.5 text-[11px] font-normal normal-case leading-snug text-foreground-secondary shadow-lg"
-              >
-                Free, community-run inference with no uptime guarantee — this model can be slow,
-                rate-limited, or fail outright.
-              </div>
-            )}
-          </div>
+            <ModeMenu
+              mode={mode}
+              onModeChange={onModeChange}
+              agents={agents}
+              activeAgentId={activeAgentId}
+              onAgentChange={onAgentChange}
+            />
+            <ModelPicker
+              model={model}
+              isPro={isPro}
+              customProviders={customProviders}
+              onSelectModel={selectModel}
+            />
           </div>
           {isRunning ? (
             <button
               type="button"
               onClick={onStop}
               title="Stop generating"
+              aria-label="Stop generating"
               className="flex items-center justify-center w-6 h-6 rounded-full bg-foreground text-background transition-colors shrink-0"
             >
               <Square className="w-2.5 h-2.5 fill-current" />
@@ -646,6 +277,7 @@ export function Composer({
               onClick={toggleRecording}
               disabled={isTranscribing}
               title={isRecording ? "Stop recording" : "Speak"}
+              aria-label={isRecording ? "Stop recording" : "Speak"}
               className={`flex items-center justify-center w-6 h-6 rounded-full transition-colors shrink-0 ${
                 isRecording
                   ? "text-red-500 bg-red-500/10 animate-pulse"
@@ -663,6 +295,8 @@ export function Composer({
               type="button"
               onClick={submit}
               disabled={disabled}
+              title="Send"
+              aria-label="Send message"
               className="flex items-center justify-center w-6 h-6 rounded-full bg-foreground text-background disabled:bg-background-tertiary disabled:text-foreground-muted transition-colors shrink-0"
             >
               <ArrowUp className="w-3.5 h-3.5" />

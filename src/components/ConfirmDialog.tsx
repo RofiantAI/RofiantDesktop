@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 
-type ConfirmOptions = {
+export type ConfirmOptions = {
   title: string;
   description?: string;
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
 };
+
+export type ConfirmFn = (options: ConfirmOptions) => Promise<boolean>;
 
 type ConfirmState = ConfirmOptions & { resolve: (value: boolean) => void };
 

@@ -452,6 +452,7 @@ export function Sidebar({
           type="button"
           onClick={onOpenSettings}
           title="Settings"
+          aria-label="Settings"
           className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors shrink-0"
         >
           <Settings className="w-3.5 h-3.5" />

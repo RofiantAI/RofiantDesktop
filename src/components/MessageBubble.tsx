@@ -25,6 +25,7 @@ function CopyButton({ text }: { text: string }) {
       type="button"
       onClick={copy}
       title={copied ? "Copied" : "Copy"}
+      aria-label={copied ? "Copied" : "Copy message"}
       className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
     >
       {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
