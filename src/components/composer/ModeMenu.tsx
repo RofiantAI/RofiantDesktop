@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, Check, ChevronDown, ListChecks, MessageCircle, ShieldOff } from "lucide-react";
 import type { Agent, ChatMode } from "../../lib/agents";
+import { useConfirmDialog } from "../ConfirmDialog";
 
 export function ModeMenu({
   mode,
@@ -17,6 +18,7 @@ export function ModeMenu({
 }) {
   const [modeOpen, setModeOpen] = useState(false);
   const modeRef = useRef<HTMLDivElement>(null);
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
 
   useEffect(() => {
     if (!modeOpen) return;
@@ -43,6 +45,22 @@ export function ModeMenu({
     onModeChange(next);
     onAgentChange(null);
     setModeOpen(false);
+  }
+
+  async function chooseSkipPermissions() {
+    setModeOpen(false);
+    if (mode === "skip-permissions") return;
+    const ok = await confirm({
+      title: "Skip permissions?",
+      description:
+        "The agent will edit files, run terminal commands, and use other tools without asking you to approve each one first. Only use this if you trust the task you're about to run.",
+      confirmLabel: "Skip permissions",
+      danger: true,
+      dontShowAgainKey: "skip-permissions",
+    });
+    if (!ok) return;
+    onModeChange("skip-permissions");
+    onAgentChange(null);
   }
 
   return (
@@ -90,7 +108,7 @@ export function ModeMenu({
           </button>
           <button
             type="button"
-            onClick={() => choose("skip-permissions")}
+            onClick={() => void chooseSkipPermissions()}
             className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary rounded-md"
           >
             <span className="flex items-center gap-2">
@@ -137,6 +155,7 @@ export function ModeMenu({
           )}
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

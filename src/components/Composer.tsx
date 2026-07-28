@@ -18,6 +18,7 @@ export function Composer({
   model,
   isPro,
   onModelChange,
+  onSelectLocalModel,
   spellcheck,
   sendKey,
   accessToken,
@@ -35,6 +36,7 @@ export function Composer({
   model: string;
   isPro: boolean;
   onModelChange: (id: string) => void;
+  onSelectLocalModel: (modelId: string) => void;
   spellcheck: boolean;
   sendKey: SendKey;
   accessToken: string | null;
@@ -114,6 +116,11 @@ export function Composer({
   function selectModel(id: string) {
     onModelChange(id);
     if (image && !isVisionModel(id)) setImage(null);
+  }
+
+  function selectLocalModel(id: string) {
+    onSelectLocalModel(id);
+    if (image) setImage(null);
   }
 
   return (
@@ -259,6 +266,7 @@ export function Composer({
               isPro={isPro}
               customProviders={customProviders}
               onSelectModel={selectModel}
+              onSelectLocalModel={selectLocalModel}
             />
           </div>
           {isRunning ? (

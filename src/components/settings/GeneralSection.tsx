@@ -4,7 +4,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { ExternalLink, Zap, RefreshCw } from "lucide-react";
 import type { AppSettings, SendKey } from "../../lib/settings";
-import { modShortcut } from "../../lib/platform";
+import { isLinux, modShortcut } from "../../lib/platform";
 import { Card, CardRow, SectionLabel, SegmentedControl, Toggle } from "./shared";
 
 export function GeneralSection({
@@ -174,9 +174,28 @@ export function GeneralSection({
       <Card>
         <CardRow
           label="Minimize to tray"
-          description="Closing the window hides it to the system tray instead of quitting"
+          description={
+            isLinux
+              ? "Closing the window hides it to the system tray instead of quitting. On GNOME this needs the \"AppIndicator and KStatusNotifierItem Support\" extension, or the icon won't appear and there'll be no way to reopen the window."
+              : "Closing the window hides it to the system tray instead of quitting"
+          }
         >
-          <Toggle checked={settings.minimizeToTray} onChange={(v) => onChange({ minimizeToTray: v })} />
+          <div className="flex items-center gap-2">
+            {isLinux && (
+              <button
+                type="button"
+                onClick={() =>
+                  void openUrl("https://extensions.gnome.org/extension/615/appindicator-support/")
+                }
+                title="Opens the extension's page on extensions.gnome.org"
+                className="flex items-center gap-1.5 h-7 px-3 rounded-md border border-border text-[12px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
+              >
+                Install
+                <ExternalLink className="w-3 h-3" />
+              </button>
+            )}
+            <Toggle checked={settings.minimizeToTray} onChange={(v) => onChange({ minimizeToTray: v })} />
+          </div>
         </CardRow>
       </Card>
 

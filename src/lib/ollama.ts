@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { CustomProvider } from "./providers";
 
 export interface LocalModelDef {
   id: string;
@@ -251,6 +252,7 @@ export const EASY_LOCAL_MODELS: LocalModelDef[] = [
 export const OLLAMA_BASE_URL = "http://localhost:11434/v1";
 
 export interface OllamaPullProgress {
+  requestId: string;
   model: string;
   status: string;
   completed?: number;
@@ -267,12 +269,13 @@ export async function pullOllamaModel(
   model: string,
   onProgress: (progress: OllamaPullProgress) => void,
 ): Promise<void> {
+  const requestId = crypto.randomUUID();
   const unlisten = await listen<OllamaPullProgress>("ollama-pull-progress", (event) => {
-    if (event.payload.model !== model) return;
+    if (event.payload.requestId !== requestId) return;
     onProgress(event.payload);
   });
   try {
-    await invoke("ollama_pull_model", { model });
+    await invoke("ollama_pull_model", { requestId, model });
   } finally {
     unlisten();
   }
@@ -280,4 +283,25 @@ export async function pullOllamaModel(
 
 export async function deleteOllamaModel(model: string): Promise<void> {
   await invoke("ollama_delete_model", { model });
+}
+
+// Finds the custom provider Rofiant already created for this locally
+// installed Ollama model, or builds a new one — shared by every place that
+// lets a user pick a local model (the Models settings tab and the
+// composer's model picker) so both end up creating identical providers.
+export function upsertLocalModelProvider(
+  customProviders: CustomProvider[],
+  modelId: string,
+  displayName?: string,
+): { customProviders: CustomProvider[]; providerId: string } {
+  const existing = customProviders.find((p) => p.baseUrl === OLLAMA_BASE_URL && p.model === modelId);
+  if (existing) return { customProviders, providerId: existing.id };
+  const provider: CustomProvider = {
+    id: crypto.randomUUID(),
+    name: displayName ?? modelId,
+    baseUrl: OLLAMA_BASE_URL,
+    model: modelId,
+    apiKey: "ollama",
+  };
+  return { customProviders: [...customProviders, provider], providerId: provider.id };
 }

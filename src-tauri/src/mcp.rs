@@ -64,6 +64,12 @@ fn build_mcp_command(command: &str, args: &[String]) -> Command {
 pub async fn connect(state: &McpState, config: McpServerConfig) -> Result<Vec<McpToolInfo>, String> {
     let McpServerConfig { id, command, args, env } = config;
 
+    // Locked for the whole spawn + list_tools + insert sequence (not just the
+    // insert) so a concurrent connect/disconnect for the same id can't race
+    // with this one and leave McpState mismatched from the tools list handed
+    // back to the caller.
+    let mut connections = state.0.lock().await;
+
     let transport = TokioChildProcess::new(build_mcp_command(&command, &args).configure(|cmd| {
         for (key, value) in &env {
             cmd.env(key, value);
@@ -90,7 +96,6 @@ pub async fn connect(state: &McpState, config: McpServerConfig) -> Result<Vec<Mc
         })
         .collect();
 
-    let mut connections = state.0.lock().await;
     // Replace any existing connection for this id (e.g. reconnect after an
     // edited config) — the old RunningService is dropped, which tears down
     // its child process.

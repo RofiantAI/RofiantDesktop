@@ -89,6 +89,7 @@ struct ToolApprovalRequestPayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OllamaPullProgress {
+    request_id: String,
     model: String,
     status: String,
     completed: Option<u64>,
@@ -142,7 +143,7 @@ fn model_uses_logfare(model: &str) -> bool {
 const LOGFARE_STATUS_URL: &str = "https://logfare.ai/v1/status";
 const LOGFARE_BEST_MODEL_TTL: Duration = Duration::from_secs(3 * 60);
 
-static LOGFARE_BEST_MODEL_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+static LOGFARE_BEST_MODEL_CACHE: OnceLock<tokio::sync::Mutex<Option<(Instant, String)>>> = OnceLock::new();
 
 /// Reads the /v1/status endpoint of the given data and returns the
 /// operational model_id with the highest uptime_percent over its reported
@@ -178,7 +179,11 @@ fn pick_best_logfare_model(status: &Value) -> Option<String> {
 async fn resolve_kiro_auto_model(client: &reqwest::Client) -> String {
     const FALLBACK: &str = "kiro-auto";
 
-    if let Some((checked_at, model)) = LOGFARE_BEST_MODEL_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap().as_ref() {
+    // Lock held across the await deliberately: serializes concurrent callers so a
+    // cache-expiry race can't fire duplicate outbound requests or let a slower
+    // response clobber a fresher one (see race condition audit).
+    let mut guard = LOGFARE_BEST_MODEL_CACHE.get_or_init(|| tokio::sync::Mutex::new(None)).lock().await;
+    if let Some((checked_at, model)) = guard.as_ref() {
         if checked_at.elapsed() < LOGFARE_BEST_MODEL_TTL {
             return model.clone();
         }
@@ -192,7 +197,7 @@ async fn resolve_kiro_auto_model(client: &reqwest::Client) -> String {
     .await
     .unwrap_or_else(|| FALLBACK.to_string());
 
-    *LOGFARE_BEST_MODEL_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some((Instant::now(), picked.clone()));
+    *guard = Some((Instant::now(), picked.clone()));
     picked
 }
 
@@ -1152,6 +1157,34 @@ fn strip_leaked_pseudo_tool_syntax(text: &str) -> String {
         .to_string()
 }
 
+/// The weakest local models occasionally don't even attempt a call — they
+/// hallucinate a garbled dump of the tool *schema* itself (the
+/// `{"type":"function","function":{"name":...,"description":...,
+/// "parameters":{...}}}` shape from the request's own `tools` array) as
+/// their reply text. This is usually corrupted JSON (unbalanced braces,
+/// mangled types) so it can't be parsed like `parse_leaked_tool_calls`
+/// above — detect the marker structurally instead and drop everything from
+/// its first occurrence onward, since once a model starts echoing schema
+/// the rest of the reply is reliably more of the same noise.
+fn strip_leaked_tool_schema_syntax(text: &str) -> String {
+    let cut = ["\"type\":\"function\"", "\"type\": \"function\""]
+        .iter()
+        .filter_map(|marker| text.find(marker))
+        .min();
+    let Some(pos) = cut else {
+        return text.to_string();
+    };
+    // The marker itself starts right after the JSON punctuation that opens
+    // its wrapping object/array (e.g. `{"type":"function"...` or
+    // `[{"type":"function"...`) — trim that dangling opener too, or a stray
+    // `{`/`[` would be left as the entire visible reply.
+    let mut head = text[..pos].trim_end();
+    while head.ends_with(['{', '[', ',']) {
+        head = head[..head.len() - 1].trim_end();
+    }
+    head.to_string()
+}
+
 fn emit_text(app: &AppHandle, request_id: &str, text: impl Into<String>) {
     let _ = app.emit(
         "chat-chunk",
@@ -1301,6 +1334,7 @@ async fn run_agent(
         if tool_calls.is_empty() {
             let text = strip_leaked_tool_syntax(message["content"].as_str().unwrap_or(""));
             let text = strip_leaked_pseudo_tool_syntax(&text);
+            let text = strip_leaked_tool_schema_syntax(&text);
             emit_text(app, request_id, text);
             let _ = app.emit(
                 "chat-usage",
@@ -1493,8 +1527,9 @@ async fn generate_title(text: String, access_token: String) -> Result<String, St
             { "role": "system", "content": TITLE_SYSTEM_PROMPT },
             { "role": "user", "content": text },
         ],
-        "max_tokens": 20,
+        "max_tokens": 60,
         "temperature": 0.3,
+        "reasoning_effort": "low",
     });
 
     let response = client
@@ -1628,7 +1663,7 @@ async fn ollama_list_models() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-async fn ollama_pull_model(app: AppHandle, model: String) -> Result<(), String> {
+async fn ollama_pull_model(app: AppHandle, request_id: String, model: String) -> Result<(), String> {
     use futures_util::StreamExt;
 
     let client = streaming_http_client();
@@ -1667,6 +1702,7 @@ async fn ollama_pull_model(app: AppHandle, model: String) -> Result<(), String> 
             let _ = app.emit(
                 "ollama-pull-progress",
                 OllamaPullProgress {
+                    request_id: request_id.clone(),
                     model: model.clone(),
                     status,
                     completed: v["completed"].as_u64(),

@@ -41,7 +41,8 @@ import {
 } from "lucide-react";
 import { generateTitle, sendChatMessage, stopChatMessage, respondToolApproval } from "./lib/groq";
 import type { ChatUsage, ToolApprovalRequest } from "./lib/groq";
-import { customProviderIdFromModel } from "./lib/providers";
+import { customModelId, customProviderIdFromModel } from "./lib/providers";
+import { upsertLocalModelProvider } from "./lib/ollama";
 import { supabase } from "./lib/supabase";
 import {
   clearRemoteConversations,
@@ -112,6 +113,7 @@ function App() {
   const [fileChanges, setFileChanges] = useState<FileChange[]>(() => loadFileChanges());
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
   const [searchTrigger, setSearchTrigger] = useState(0);
   const [mcpConnectErrors, setMcpConnectErrors] = useState<{ id: string; name: string; error: string }[]>([]);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -227,14 +229,22 @@ function App() {
     };
   }, []);
 
+  const applySessionSeqRef = useRef(0);
+
   useEffect(() => {
     async function applySession(newSession: Session | null) {
+      // getSession() and onAuthStateChange can both call this, and either can
+      // resolve out of order (a slow stale getSession() call finishing after
+      // a newer SIGNED_OUT event). Bail if a later call already superseded
+      // this one by the time our awaits resolve.
+      const seq = ++applySessionSeqRef.current;
       if (!newSession) {
         setSession(null);
         setPendingMfaSession(null);
         return;
       }
       const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (seq !== applySessionSeqRef.current) return;
       if (aal && aal.nextLevel === "aal2" && aal.nextLevel !== aal.currentLevel) {
         setSession(null);
         setPendingMfaSession(newSession);
@@ -356,6 +366,11 @@ function App() {
     },
     [isPro],
   );
+
+  function handleSelectLocalModel(modelId: string) {
+    const { customProviders, providerId } = upsertLocalModelProvider(settings.customProviders, modelId);
+    updateSettings({ customProviders, model: customModelId(providerId) });
+  }
 
   useEffect(() => {
     setSettings((prev) => {
@@ -593,6 +608,11 @@ function App() {
       }
 
       const existing = conversations.find((c) => c.id === targetId) ?? null;
+      // Composer's `disabled` prop can lag a render behind (e.g. rapid double
+      // Enter), letting two sends fire for the same conversation before the
+      // first's request id lands in activeRequestIdsRef. Bail here so the
+      // second send can't overwrite the first's tracked request id.
+      if (existing?.status === "running") return;
       const isFirstMessage = (existing?.messages.length ?? 0) === 0;
       const title = isFirstMessage ? text.slice(0, 40) : (existing?.title ?? "New chat");
 
@@ -770,7 +790,8 @@ function App() {
         handleNew();
       } else if (key === "b") {
         e.preventDefault();
-        setSidebarOpen((v) => !v);
+        if (historyOpen) setHistorySidebarOpen((v) => !v);
+        else setSidebarOpen((v) => !v);
       } else if (key === "k") {
         e.preventDefault();
         setSidebarOpen(true);
@@ -853,10 +874,11 @@ function App() {
     },
     {
       id: "toggle-sidebar",
-      label: sidebarOpen ? "Close sidebar" : "Open sidebar",
-      icon: sidebarOpen ? PanelLeftClose : PanelLeft,
+      label: (historyOpen ? historySidebarOpen : sidebarOpen) ? "Close sidebar" : "Open sidebar",
+      icon: (historyOpen ? historySidebarOpen : sidebarOpen) ? PanelLeftClose : PanelLeft,
       shortcut: modShortcut("⌘B"),
-      onRun: () => setSidebarOpen((v) => !v),
+      onRun: () =>
+        historyOpen ? setHistorySidebarOpen((v) => !v) : setSidebarOpen((v) => !v),
     },
     {
       id: "settings",
@@ -925,6 +947,7 @@ function App() {
     content = (
       <ChangeHistoryPage
         changes={fileChanges.filter((f) => f.conversationId === activeId)}
+        sidebarOpen={historySidebarOpen}
         onClose={() => setHistoryOpen(false)}
         onClear={handleClearFileChanges}
       />
@@ -978,7 +1001,13 @@ function App() {
           searchTrigger={searchTrigger}
           user={
             session
-              ? { email: session.user.email ?? "", avatarUrl: getUserAvatarUrl(session.user) }
+              ? {
+                  email: session.user.email ?? "",
+                  avatarUrl: getUserAvatarUrl(session.user),
+                  displayName:
+                    (session.user.user_metadata?.display_name as string | undefined)?.trim() ||
+                    null,
+                }
               : null
           }
           plan={plan}
@@ -1007,6 +1036,7 @@ function App() {
           settings={settings}
           isPro={isPro}
           onModelChange={(id) => updateSettings({ model: id })}
+          onSelectLocalModel={handleSelectLocalModel}
           onModeChange={(mode) => updateSettings({ chatMode: mode })}
           onAgentChange={(agentId) => updateSettings({ activeAgentId: agentId })}
           accessToken={session?.access_token ?? null}
@@ -1016,12 +1046,11 @@ function App() {
         />
       </main>
 
-      {filesPanelOpen && (
-        <FileChangesPanel
-          changes={fileChanges.filter((f) => f.conversationId === activeId)}
-          onClose={() => setFilesPanelOpen(false)}
-        />
-      )}
+      <FileChangesPanel
+        changes={fileChanges.filter((f) => f.conversationId === activeId)}
+        open={filesPanelOpen}
+        onClose={() => setFilesPanelOpen(false)}
+      />
     </div>
     );
   }
@@ -1041,8 +1070,10 @@ function App() {
       {confirmDialog}
       <ResizeHandles />
       <TitleBar
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        sidebarOpen={historyOpen ? historySidebarOpen : sidebarOpen}
+        onToggleSidebar={() =>
+          historyOpen ? setHistorySidebarOpen((v) => !v) : setSidebarOpen((v) => !v)
+        }
         maximized={maximized}
         rounded={rounded}
       />

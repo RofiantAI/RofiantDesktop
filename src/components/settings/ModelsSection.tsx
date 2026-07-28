@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Box, Search, X, Check, Download, Loader2, Trash2 } from "lucide-react";
-import { customModelId, type CustomProvider } from "../../lib/providers";
+import { customModelId } from "../../lib/providers";
 import type { AppSettings } from "../../lib/settings";
 import {
   EASY_LOCAL_MODELS,
@@ -9,10 +9,18 @@ import {
   deleteOllamaModel,
   listInstalledOllamaModels,
   pullOllamaModel,
+  upsertLocalModelProvider,
   type LocalModelDef,
 } from "../../lib/ollama";
 import type { ConfirmFn } from "../ConfirmDialog";
-import { removeProviderFromSettings } from "./shared";
+import { Dropdown, removeProviderFromSettings } from "./shared";
+
+type SortKey = "recommended" | "name" | "size-asc" | "size-desc";
+
+function sizeGb(size: string): number {
+  const n = parseFloat(size);
+  return Number.isFinite(n) ? n : 0;
+}
 
 export function ModelsSection({
   settings,
@@ -30,6 +38,7 @@ export function ModelsSection({
     {},
   );
   const [modelSearch, setModelSearch] = useState("");
+  const [sortBy, setSortBy] = useState<SortKey>("recommended");
 
   useEffect(() => {
     let cancelled = false;
@@ -77,19 +86,8 @@ export function ModelsSection({
   }
 
   function selectLocalModel(m: LocalModelDef) {
-    const existing = findLocalProvider(m);
-    if (existing) {
-      onChange({ model: customModelId(existing.id) });
-      return;
-    }
-    const provider: CustomProvider = {
-      id: crypto.randomUUID(),
-      name: m.name,
-      baseUrl: OLLAMA_BASE_URL,
-      model: m.id,
-      apiKey: "ollama",
-    };
-    onChange({ customProviders: [...settings.customProviders, provider], model: customModelId(provider.id) });
+    const { customProviders, providerId } = upsertLocalModelProvider(settings.customProviders, m.id, m.name);
+    onChange({ customProviders, model: customModelId(providerId) });
   }
 
   async function removeLocalModel(m: LocalModelDef) {
@@ -120,6 +118,18 @@ export function ModelsSection({
         (m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q) || m.desc.toLowerCase().includes(q),
       )
     : EASY_LOCAL_MODELS;
+  const sorted = [...filtered].sort((a, b) => {
+    switch (sortBy) {
+      case "name":
+        return a.name.localeCompare(b.name);
+      case "size-asc":
+        return sizeGb(a.size) - sizeGb(b.size);
+      case "size-desc":
+        return sizeGb(b.size) - sizeGb(a.size);
+      default:
+        return 0;
+    }
+  });
 
   return (
     <div>
@@ -146,26 +156,38 @@ export function ModelsSection({
         </div>
       )}
 
-      <div className="relative mb-3">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground-muted" />
-        <input
-          type="text"
-          value={modelSearch}
-          onChange={(e) => setModelSearch(e.target.value)}
-          placeholder="Search models…"
-          className="w-full h-8 pl-8 pr-8 rounded-lg border border-border bg-background-secondary text-[13px] text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+      <div className="flex items-center gap-2 mb-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground-muted" />
+          <input
+            type="text"
+            value={modelSearch}
+            onChange={(e) => setModelSearch(e.target.value)}
+            placeholder="Search models…"
+            className="w-full h-8 pl-8 pr-8 rounded-lg border border-border bg-background-secondary text-[13px] text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+          />
+          {modelSearch && (
+            <button
+              type="button"
+              onClick={() => setModelSearch("")}
+              title="Clear search"
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-4 h-4 text-foreground-muted hover:text-foreground"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+        <Dropdown<SortKey>
+          value={sortBy}
+          onChange={setSortBy}
+          options={[
+            { value: "recommended", label: "Recommended" },
+            { value: "name", label: "Name (A–Z)" },
+            { value: "size-asc", label: "Size (small first)" },
+            { value: "size-desc", label: "Size (large first)" },
+          ]}
         />
-        {modelSearch && (
-          <button
-            type="button"
-            onClick={() => setModelSearch("")}
-            title="Clear search"
-            aria-label="Clear search"
-            className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-4 h-4 text-foreground-muted hover:text-foreground"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        )}
       </div>
 
       {filtered.length === 0 ? (
@@ -174,7 +196,7 @@ export function ModelsSection({
         </div>
       ) : (
         <div className="space-y-1.5">
-          {filtered.map((m) => {
+          {sorted.map((m) => {
             const installed = installedLocalModels?.includes(m.id) ?? false;
             const localProvider = findLocalProvider(m);
             const active = localProvider ? customModelId(localProvider.id) === settings.model : false;

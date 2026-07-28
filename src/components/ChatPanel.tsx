@@ -15,6 +15,7 @@ export function ChatPanel({
   settings,
   isPro,
   onModelChange,
+  onSelectLocalModel,
   onModeChange,
   onAgentChange,
   accessToken,
@@ -28,6 +29,7 @@ export function ChatPanel({
   settings: AppSettings;
   isPro: boolean;
   onModelChange: (id: string) => void;
+  onSelectLocalModel: (modelId: string) => void;
   onModeChange: (mode: ChatMode) => void;
   onAgentChange: (agentId: string | null) => void;
   accessToken: string | null;
@@ -57,6 +59,7 @@ export function ChatPanel({
             model={settings.model}
             isPro={isPro}
             onModelChange={onModelChange}
+            onSelectLocalModel={onSelectLocalModel}
             spellcheck={settings.spellcheck}
             sendKey={settings.sendKey}
             accessToken={accessToken}
@@ -122,6 +125,7 @@ export function ChatPanel({
         model={settings.model}
         isPro={isPro}
         onModelChange={onModelChange}
+        onSelectLocalModel={onSelectLocalModel}
         spellcheck={settings.spellcheck}
         sendKey={settings.sendKey}
         accessToken={accessToken}

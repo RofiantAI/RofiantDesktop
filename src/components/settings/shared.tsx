@@ -81,14 +81,14 @@ export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: 
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative w-9 h-5 rounded-full shrink-0 cursor-pointer ring-1 ring-inset transition-colors duration-150 ${
+      className={`flex items-center w-9 h-5 p-0.5 rounded-full shrink-0 cursor-pointer ring-1 ring-inset transition-colors duration-150 ${
         checked
           ? "bg-accent-success ring-accent-success"
           : "bg-background-tertiary ring-border hover:ring-border-light"
       }`}
     >
       <span
-        className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-150 ${
+        className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-150 ${
           checked ? "translate-x-4" : "translate-x-0"
         }`}
       />

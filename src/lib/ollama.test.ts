@@ -28,23 +28,33 @@ describe("pullOllamaModel", () => {
     listenMock.mockReset();
   });
 
-  it("only forwards progress events for the requested model, and unlistens after invoke settles", async () => {
-    let handler: (event: { payload: { model: string; status: string; done: boolean } }) => void = () => {};
+  it("only forwards progress events for the current request, and unlistens after invoke settles", async () => {
+    let handler: (event: {
+      payload: { requestId: string; model: string; status: string; done: boolean };
+    }) => void = () => {};
     const unlisten = vi.fn();
     listenMock.mockImplementation((_event: string, cb: typeof handler) => {
       handler = cb;
       return Promise.resolve(unlisten);
     });
-    invokeMock.mockImplementation(async () => {
-      handler({ payload: { model: "other-model", status: "pulling", done: false } });
-      handler({ payload: { model: "llama3.2:1b", status: "pulling", done: false } });
+    let capturedRequestId = "";
+    invokeMock.mockImplementation(async (_cmd: string, args: { requestId: string; model: string }) => {
+      capturedRequestId = args.requestId;
+      // A stale event from some other in-flight pull — must be ignored.
+      handler({ payload: { requestId: "stale-request-id", model: "llama3.2:1b", status: "pulling", done: false } });
+      handler({ payload: { requestId: args.requestId, model: "llama3.2:1b", status: "pulling", done: false } });
     });
 
     const onProgress = vi.fn();
     await pullOllamaModel("llama3.2:1b", onProgress);
 
     expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress).toHaveBeenCalledWith({ model: "llama3.2:1b", status: "pulling", done: false });
+    expect(onProgress).toHaveBeenCalledWith({
+      requestId: capturedRequestId,
+      model: "llama3.2:1b",
+      status: "pulling",
+      done: false,
+    });
     expect(unlisten).toHaveBeenCalledTimes(1);
   });
 

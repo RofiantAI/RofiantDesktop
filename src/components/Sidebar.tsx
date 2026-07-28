@@ -25,6 +25,7 @@ import { modShortcut } from "../lib/platform";
 export interface SidebarUser {
   email: string;
   avatarUrl: string | null;
+  displayName: string | null;
 }
 
 export function Avatar({
@@ -175,7 +176,7 @@ export function Sidebar({
 
   return (
     <aside className="w-[272px] shrink-0 flex flex-col border-r border-border bg-background-secondary h-full">
-      <div className="flex items-center justify-between h-11 px-3 shrink-0">
+      <div className="flex items-center justify-between h-11 px-2 shrink-0">
         {searching ? (
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground-muted pointer-events-none" />
@@ -215,7 +216,7 @@ export function Sidebar({
         )}
       </div>
 
-      <div className="px-2 pb-1">
+      <div className="px-2 pb-1 space-y-1">
         <button
           type="button"
           onClick={onHome}
@@ -235,7 +236,9 @@ export function Sidebar({
         >
           <Plus className="w-4 h-4 text-foreground-muted" />
           <span className="flex-1 text-left">New Chat</span>
-          <kbd className="text-[13px] text-foreground-muted">{modShortcut("⌘N")}</kbd>
+          <kbd className="text-[13px] text-foreground-muted">
+            {modShortcut("⌘N")}
+          </kbd>
         </button>
       </div>
 
@@ -244,130 +247,130 @@ export function Sidebar({
           <ConversationListSkeleton />
         ) : (
           <>
-        {Object.entries(groups).map(([label, items]) => {
-          if (!items.length) return null;
-          return (
-            <div key={label} className="mb-0.5">
-              <div className="px-4 pt-3 pb-1 text-[11px] text-foreground-muted">
-                {label}
-              </div>
-              {items.map((c) => {
-                const active = c.id === activeId;
-                const renaming = renamingId === c.id;
-                return (
-                  <div key={c.id} className="px-2 relative">
-                    <div
-                      className={`flex w-full items-center gap-2 h-8 px-2 rounded-md text-[13px] transition-colors ${
-                        active
-                          ? "bg-background-tertiary text-foreground"
-                          : "text-foreground-secondary hover:bg-background-tertiary/60 hover:text-foreground"
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => !renaming && onSelect(c.id)}
-                        className="flex flex-1 min-w-0 items-center gap-2 text-left"
-                      >
-                        <MessageSquare className="w-3.5 h-3.5 shrink-0 text-foreground-muted" />
-                        {renaming ? (
-                          <input
-                            autoFocus
-                            value={renameValue}
-                            onChange={(e) => setRenameValue(e.target.value)}
-                            onClick={(e) => e.stopPropagation()}
-                            onFocus={(e) => e.target.select()}
-                            onBlur={() => commitRename(c)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                commitRename(c);
-                              } else if (e.key === "Escape") {
-                                e.preventDefault();
-                                setRenamingId(null);
-                              }
-                            }}
-                            className="flex-1 min-w-0 bg-transparent text-foreground outline-none border-b border-foreground-muted/40"
-                          />
-                        ) : (
-                          <span className="flex-1 min-w-0 truncate">
-                            {c.title}
-                          </span>
-                        )}
-                      </button>
-                      {c.status === "running" && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-accent-primary animate-pulse shrink-0" />
-                      )}
-                      {!renaming && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenMenuId((prev) =>
-                              prev === c.id ? null : c.id,
-                            );
-                          }}
-                          aria-label="Conversation options"
-                          className="flex items-center justify-center w-5 h-5 rounded shrink-0 text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
-                        >
-                          <MoreHorizontal className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                    {openMenuId === c.id && (
-                      <div
-                        ref={rowMenuRef}
-                        className="absolute right-2 top-8 z-10 w-36 rounded-lg bg-card border border-border shadow-lg py-1 overflow-hidden"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => startRename(c)}
-                          className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors"
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                          Rename
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOpenMenuId(null);
-                            onTogglePin(c.id);
-                          }}
-                          className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors"
-                        >
-                          {c.pinned ? (
-                            <PinOff className="w-3.5 h-3.5" />
-                          ) : (
-                            <Pin className="w-3.5 h-3.5" />
-                          )}
-                          {c.pinned ? "Unpin" : "Pin"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOpenMenuId(null);
-                            onDelete(c.id);
-                          }}
-                          className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-red-400 hover:bg-background-tertiary transition-colors"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          Delete
-                        </button>
-                      </div>
-                    )}
+            {Object.entries(groups).map(([label, items]) => {
+              if (!items.length) return null;
+              return (
+                <div key={label} className="mb-0.5">
+                  <div className="px-4 pt-3 pb-1 text-[11px] text-foreground-muted">
+                    {label}
                   </div>
-                );
-              })}
-            </div>
-          );
-        })}
-        {filtered.length === 0 && (
-          <div className="px-5 py-8 text-center">
-            <MessageSquare className="w-8 h-8 text-foreground-muted/30 mx-auto mb-2" />
-            <p className="text-xs text-foreground-muted">
-              {trimmed ? "No chats match your search" : "No chats yet"}
-            </p>
-          </div>
-        )}
+                  {items.map((c) => {
+                    const active = c.id === activeId;
+                    const renaming = renamingId === c.id;
+                    return (
+                      <div key={c.id} className="px-2 relative">
+                        <div
+                          className={`flex w-full items-center gap-2 h-8 px-2 rounded-md text-[13px] transition-colors ${
+                            active
+                              ? "bg-background-tertiary text-foreground"
+                              : "text-foreground-secondary hover:bg-background-tertiary/60 hover:text-foreground"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => !renaming && onSelect(c.id)}
+                            className="flex flex-1 min-w-0 items-center gap-2 text-left"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5 shrink-0 text-foreground-muted" />
+                            {renaming ? (
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                onFocus={(e) => e.target.select()}
+                                onBlur={() => commitRename(c)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    commitRename(c);
+                                  } else if (e.key === "Escape") {
+                                    e.preventDefault();
+                                    setRenamingId(null);
+                                  }
+                                }}
+                                className="flex-1 min-w-0 bg-transparent text-foreground outline-none border-b border-foreground-muted/40"
+                              />
+                            ) : (
+                              <span className="flex-1 min-w-0 truncate">
+                                {c.title}
+                              </span>
+                            )}
+                          </button>
+                          {c.status === "running" && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-accent-primary animate-pulse shrink-0" />
+                          )}
+                          {!renaming && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenMenuId((prev) =>
+                                  prev === c.id ? null : c.id,
+                                );
+                              }}
+                              aria-label="Conversation options"
+                              className="flex items-center justify-center w-5 h-5 rounded shrink-0 text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        {openMenuId === c.id && (
+                          <div
+                            ref={rowMenuRef}
+                            className="absolute right-2 top-8 z-10 w-36 rounded-lg bg-card border border-border shadow-lg py-1 overflow-hidden"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => startRename(c)}
+                              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                              Rename
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenMenuId(null);
+                                onTogglePin(c.id);
+                              }}
+                              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors"
+                            >
+                              {c.pinned ? (
+                                <PinOff className="w-3.5 h-3.5" />
+                              ) : (
+                                <Pin className="w-3.5 h-3.5" />
+                              )}
+                              {c.pinned ? "Unpin" : "Pin"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenMenuId(null);
+                                onDelete(c.id);
+                              }}
+                              className="flex items-center gap-2.5 w-full px-3 py-1.5 text-[13px] text-red-400 hover:bg-background-tertiary transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+            {filtered.length === 0 && (
+              <div className="px-5 py-8 text-center">
+                <MessageSquare className="w-8 h-8 text-foreground-muted/30 mx-auto mb-2" />
+                <p className="text-xs text-foreground-muted">
+                  {trimmed ? "No chats match your search" : "No chats yet"}
+                </p>
+              </div>
+            )}
           </>
         )}
       </nav>
@@ -388,7 +391,7 @@ export function Sidebar({
               <Avatar email={user.email} avatarUrl={user.avatarUrl} size={28} />
               <div className="flex-1 min-w-0 text-left">
                 <div className="text-[13px] text-foreground truncate leading-tight">
-                  {user.email.split("@")[0]}
+                  {user.displayName || user.email.split("@")[0]}
                 </div>
                 <div className="text-[11px] text-foreground-muted truncate leading-tight capitalize">
                   {plan}
