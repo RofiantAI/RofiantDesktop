@@ -6,7 +6,35 @@ on:
       - "v*"
 
 jobs:
+  # Runs alone, before the platform matrix, so exactly one draft release gets
+  # created. Letting all 4 matrix jobs independently find-or-create the
+  # release is racy — they can each decide no release exists yet and create
+  # their own, splitting the assets (and the updater's latest.json) across
+  # multiple same-tag drafts.
+  create-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+    steps:
+      - name: Create release
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: context.ref.replace("refs/tags/", ""),
+              name: `Rofiant ${context.ref.replace("refs/tags/", "")}`,
+              draft: true,
+              prerelease: false,
+            });
+            return data.id;
+
   release:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -66,8 +94,5 @@ jobs:
           # APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID here only once the actual
           # Apple Developer ID secrets exist in this repo.
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Rofiant ${{ github.ref_name }}"
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
