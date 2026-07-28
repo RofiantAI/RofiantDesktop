@@ -67,7 +67,7 @@ import type { SlashCommand } from "./lib/commands";
 import { loadRules, saveRules, rulesToPrompt } from "./lib/rules";
 import type { Rule } from "./lib/rules";
 import { PLAN_MODE_INSTRUCTION } from "./lib/agents";
-import { modShortcut } from "./lib/platform";
+import { isLinux, modShortcut } from "./lib/platform";
 import { parseAuthRedirect } from "./lib/auth-redirect";
 import type { Conversation, FileChange, Message } from "./types";
 
@@ -1026,7 +1026,11 @@ function App() {
     );
   }
 
-  const rounded = !maximized;
+  // macOS and Windows round undecorated top-level windows at the OS level
+  // regardless of our CSS; Linux window managers don't, and the window here
+  // isn't `transparent` in tauri.conf.json, so drawing rounded-lg corners on
+  // top of a still-rectangular window just exposes an unstyled corner.
+  const rounded = !maximized && !isLinux;
 
   return (
     <div
