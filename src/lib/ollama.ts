@@ -285,6 +285,13 @@ export async function deleteOllamaModel(model: string): Promise<void> {
   await invoke("ollama_delete_model", { model });
 }
 
+// Downloads the official Ollama installer for the current OS and launches
+// it. The native installer/app takes over from there (its own permission
+// prompts, its own UI) — this just gets it in front of the user.
+export async function installOllama(): Promise<void> {
+  await invoke("ollama_install");
+}
+
 // Finds the custom provider Rofiant already created for this locally
 // installed Ollama model, or builds a new one — shared by every place that
 // lets a user pick a local model (the Models settings tab and the

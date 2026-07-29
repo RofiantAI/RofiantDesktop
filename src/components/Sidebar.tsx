@@ -1,5 +1,6 @@
 import { useMemo, useState, useRef, useEffect } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import type { Update } from "@tauri-apps/plugin-updater";
 import {
   Plus,
   Home,
@@ -16,11 +17,29 @@ import {
   Trash2,
   BookOpen,
   MessageCircle,
+  User,
+  Zap,
+  RefreshCw,
+  Contrast,
+  HelpCircle,
+  ChevronRight,
+  Check,
 } from "lucide-react";
 import type { Conversation } from "../types";
+import type { Theme } from "../lib/settings";
+import { isProPlan } from "../lib/plan";
 import { ConversationListSkeleton } from "./Skeleton";
 import { SidebarNews } from "./SidebarNews";
 import { modShortcut } from "../lib/platform";
+
+const menuItemClass =
+  "flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors rounded-md";
+
+const THEME_OPTIONS: { value: Theme; label: string }[] = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "system", label: "System" },
+];
 
 export interface SidebarUser {
   email: string;
@@ -107,6 +126,9 @@ export function Sidebar({
   plan,
   onSignIn,
   onSignOut,
+  theme,
+  onThemeChange,
+  onCheckForUpdate,
 }: {
   conversations: Conversation[];
   loading?: boolean;
@@ -123,10 +145,18 @@ export function Sidebar({
   plan: string;
   onSignIn: () => void;
   onSignOut: () => void;
+  theme: Theme;
+  onThemeChange: (theme: Theme) => void;
+  onCheckForUpdate: () => Promise<Update | null>;
 }) {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [submenu, setSubmenu] = useState<"appearance" | "help" | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "latest" | "available">(
+    "idle",
+  );
+  const isPro = isProPlan(plan);
   const menuRef = useRef<HTMLDivElement>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const rowMenuRef = useRef<HTMLDivElement>(null);
@@ -141,6 +171,7 @@ export function Sidebar({
     function handleClick(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false);
+        setSubmenu(null);
       }
       if (
         rowMenuRef.current &&
@@ -157,6 +188,17 @@ export function Sidebar({
     setOpenMenuId(null);
     setRenamingId(c.id);
     setRenameValue(c.title);
+  }
+
+  async function handleCheckForUpdate() {
+    setUpdateStatus("checking");
+    try {
+      const update = await onCheckForUpdate();
+      setUpdateStatus(update ? "available" : "latest");
+    } catch (err) {
+      console.error("Update check failed:", err);
+      setUpdateStatus("idle");
+    }
   }
 
   function commitRename(c: Conversation) {
@@ -385,7 +427,10 @@ export function Sidebar({
           <>
             <button
               type="button"
-              onClick={() => setMenuOpen((v) => !v)}
+              onClick={() => {
+                setMenuOpen((v) => !v);
+                setSubmenu(null);
+              }}
               className="flex items-center gap-2 flex-1 min-w-0 rounded-md hover:bg-background-tertiary transition-colors -mx-1 px-1 py-0.5"
             >
               <Avatar email={user.email} avatarUrl={user.avatarUrl} size={28} />
@@ -399,29 +444,130 @@ export function Sidebar({
               </div>
             </button>
             {menuOpen && (
-              <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg bg-card border border-border shadow-lg py-1 px-0.5 overflow-hidden">
+              <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg bg-card border border-border shadow-lg py-1 px-0.5 overflow-visible z-20">
+                <div className="px-3 pt-1.5 pb-1">
+                  <div className="text-[13px] text-foreground truncate leading-tight">
+                    {user.displayName || user.email.split("@")[0]}
+                  </div>
+                  <div className="text-[11px] text-foreground-muted truncate leading-tight">
+                    {user.email}
+                  </div>
+                </div>
+                {!isPro && (
+                  <div className="px-2 pb-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void openUrl("https://rofiant.ca/pricing");
+                      }}
+                      className="flex items-center justify-center gap-1.5 w-full h-7 rounded-md border border-border text-[12px] font-medium text-foreground hover:bg-background-tertiary transition-colors"
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      Upgrade to Pro
+                    </button>
+                  </div>
+                )}
+                <div className="h-px bg-border my-1" />
                 <button
                   type="button"
                   onClick={() => {
                     setMenuOpen(false);
-                    void openUrl("https://rofiant.ca/resources/documentation");
+                    void openUrl("https://www.rofiant.ca/chat/settings");
                   }}
-                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors rounded-md"
+                  className={menuItemClass}
                 >
-                  <BookOpen className="w-3.5 h-3.5" />
-                  Docs
+                  <User className="w-3.5 h-3.5" />
+                  Profile
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void openUrl("https://rofiant.ca/company/contact");
-                  }}
-                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors rounded-md"
+                  onClick={() => void handleCheckForUpdate()}
+                  className={menuItemClass}
                 >
-                  <MessageCircle className="w-3.5 h-3.5" />
-                  Contact Us
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${updateStatus === "checking" ? "animate-spin" : ""}`}
+                  />
+                  {updateStatus === "checking"
+                    ? "Checking…"
+                    : updateStatus === "latest"
+                      ? "Up to date"
+                      : updateStatus === "available"
+                        ? "Update available"
+                        : "Check for Updates"}
                 </button>
+                <div
+                  className="relative pr-1"
+                  onMouseEnter={() => setSubmenu("appearance")}
+                  onMouseLeave={() => setSubmenu(null)}
+                >
+                  <button type="button" className={menuItemClass}>
+                    <Contrast className="w-3.5 h-3.5" />
+                    <span className="flex-1 text-left">Appearance</span>
+                    <span className="text-foreground-muted capitalize">{theme}</span>
+                    <ChevronRight className="w-3.5 h-3.5 text-foreground-muted" />
+                  </button>
+                  {submenu === "appearance" && (
+                    <div className="absolute left-full top-0 w-32 rounded-lg bg-card border border-border shadow-lg py-1 px-0.5 overflow-hidden z-20">
+                      {THEME_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => {
+                            onThemeChange(opt.value);
+                            setMenuOpen(false);
+                            setSubmenu(null);
+                          }}
+                          className={`${menuItemClass} justify-between`}
+                        >
+                          {opt.label}
+                          {theme === opt.value && (
+                            <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div
+                  className="relative pr-1"
+                  onMouseEnter={() => setSubmenu("help")}
+                  onMouseLeave={() => setSubmenu(null)}
+                >
+                  <button type="button" className={menuItemClass}>
+                    <HelpCircle className="w-3.5 h-3.5" />
+                    <span className="flex-1 text-left">Help</span>
+                    <ChevronRight className="w-3.5 h-3.5 text-foreground-muted" />
+                  </button>
+                  {submenu === "help" && (
+                    <div className="absolute left-full top-0 w-40 rounded-lg bg-card border border-border shadow-lg py-1 px-0.5 overflow-hidden z-20">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setSubmenu(null);
+                          void openUrl("https://rofiant.ca/resources/documentation");
+                        }}
+                        className={menuItemClass}
+                      >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        Docs
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setSubmenu(null);
+                          void openUrl("https://rofiant.ca/company/contact");
+                        }}
+                        className={menuItemClass}
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        Contact Us
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <div className="h-px bg-border my-1" />
                 <button
                   type="button"
@@ -429,10 +575,10 @@ export function Sidebar({
                     setMenuOpen(false);
                     onSignOut();
                   }}
-                  className="flex items-center gap-2.5 w-[calc(100%-2px)] mx-px px-3 py-1 text-sm text-foreground-secondary hover:bg-background-tertiary hover:text-foreground transition-colors rounded-md"
+                  className={menuItemClass}
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  Sign out
+                  Log Out
                 </button>
               </div>
             )}

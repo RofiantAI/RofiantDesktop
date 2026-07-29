@@ -5,9 +5,16 @@ interface NewsItem {
   id: string;
   title: string;
   description: string;
+  bannerUrl?: string;
 }
 
 const NEWS_ITEMS: NewsItem[] = [
+  {
+    id: "dmc-partnership",
+    title: "Partnered with DMC.cc",
+    description: "Rofiant has partnered with DMC.cc to bring new capabilities to the app.",
+    bannerUrl: "https://oss.dmc.cc/logo2.png",
+  },
   {
     id: "tool-call-approval",
     title: "Approve tool calls",
@@ -48,27 +55,49 @@ export function SidebarNews() {
 
   return (
     <div className="px-2 pb-2 pt-1 space-y-1.5 shrink-0">
-      {items.map((item) => (
-        <div
-          key={item.id}
-          className="relative rounded-lg border border-border bg-background-tertiary/50 px-2.5 py-2 pr-6"
-        >
-          <div className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
-            <Sparkles className="w-3 h-3 text-accent-primary shrink-0" />
-            {item.title}
-          </div>
-          <p className="mt-0.5 text-[11px] leading-snug text-foreground-muted">{item.description}</p>
-          <button
-            type="button"
-            onClick={() => dismiss(item.id)}
-            title="Dismiss"
-            aria-label={`Dismiss ${item.title}`}
-            className="absolute top-1.5 right-1.5 flex items-center justify-center w-4 h-4 rounded text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
+      {items.map((item) =>
+        item.bannerUrl ? (
+          <div
+            key={item.id}
+            className="relative rounded-lg border border-border bg-background-tertiary/50 overflow-hidden"
           >
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      ))}
+            <img src={item.bannerUrl} alt="" className="w-full h-20 object-cover" />
+            <div className="px-2.5 py-2 pr-6">
+              <div className="text-[12px] font-medium text-foreground">{item.title}</div>
+              <p className="mt-0.5 text-[11px] leading-snug text-foreground-muted">{item.description}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => dismiss(item.id)}
+              title="Dismiss"
+              aria-label={`Dismiss ${item.title}`}
+              className="absolute top-1.5 right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-black/50 text-white hover:bg-black/70 transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        ) : (
+          <div
+            key={item.id}
+            className="relative rounded-lg border border-border bg-background-tertiary/50 px-2.5 py-2 pr-6"
+          >
+            <div className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
+              <Sparkles className="w-3 h-3 text-accent-primary shrink-0" />
+              {item.title}
+            </div>
+            <p className="mt-0.5 text-[11px] leading-snug text-foreground-muted">{item.description}</p>
+            <button
+              type="button"
+              onClick={() => dismiss(item.id)}
+              title="Dismiss"
+              aria-label={`Dismiss ${item.title}`}
+              className="absolute top-1.5 right-1.5 flex items-center justify-center w-4 h-4 rounded text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        ),
+      )}
     </div>
   );
 }

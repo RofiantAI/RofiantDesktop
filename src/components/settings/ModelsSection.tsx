@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Box, Search, X, Check, Download, Loader2, Trash2 } from "lucide-react";
 import { customModelId } from "../../lib/providers";
@@ -7,6 +7,7 @@ import {
   EASY_LOCAL_MODELS,
   OLLAMA_BASE_URL,
   deleteOllamaModel,
+  installOllama,
   listInstalledOllamaModels,
   pullOllamaModel,
   upsertLocalModelProvider,
@@ -34,11 +35,21 @@ export function ModelsSection({
   const [installedLocalModels, setInstalledLocalModels] = useState<string[] | null>(null);
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [ollamaUnreachable, setOllamaUnreachable] = useState(false);
+  const [installState, setInstallState] = useState<"idle" | "installing" | "launched" | "error">("idle");
+  const [installError, setInstallError] = useState<string | null>(null);
   const [pullingModels, setPullingModels] = useState<Record<string, { status: string; pct: number | null }>>(
     {},
   );
   const [modelSearch, setModelSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("recommended");
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +93,20 @@ export function ModelsSection({
         delete next[m.id];
         return next;
       });
+    }
+  }
+
+  async function handleInstallOllama() {
+    setInstallState("installing");
+    setInstallError(null);
+    try {
+      await installOllama();
+      if (!mountedRef.current) return;
+      setInstallState("launched");
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setInstallError(err instanceof Error ? err.message : String(err));
+      setInstallState("error");
     }
   }
 
@@ -147,12 +172,44 @@ export function ModelsSection({
       </p>
 
       {ollamaUnreachable && (
-        <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6">
+        <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6 px-6">
           <Box className="w-5 h-5 text-foreground-muted mb-2" />
           <div className="text-[13px] text-foreground-secondary">Can't reach Ollama</div>
-          <div className="text-[12px] text-foreground-muted mt-0.5 max-w-xs">
-            Install Ollama and make sure it's running, then reopen this tab.
-          </div>
+
+          {installState === "launched" ? (
+            <div className="text-[12px] text-foreground-muted mt-0.5 max-w-xs">
+              Installer opened. Finish the steps there, then reopen this tab.
+            </div>
+          ) : (
+            <>
+              <div className="text-[12px] text-foreground-muted mt-0.5 max-w-xs">
+                Ollama isn't installed, or isn't running.
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleInstallOllama()}
+                disabled={installState === "installing"}
+                className="flex items-center gap-1.5 h-8 px-3 mt-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
+              >
+                {installState === "installing" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Download className="w-3.5 h-3.5" />
+                )}
+                {installState === "installing" ? "Downloading installer…" : "Install Ollama"}
+              </button>
+              {installState === "error" && (
+                <div className="text-[12px] text-red-500 mt-2 max-w-xs">{installError}</div>
+              )}
+              <button
+                type="button"
+                onClick={() => void openUrl("https://ollama.com")}
+                className="text-[12px] text-foreground-muted underline hover:text-foreground mt-2"
+              >
+                or download it manually
+              </button>
+            </>
+          )}
         </div>
       )}
 

@@ -100,6 +100,7 @@ function App() {
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarSettled, setSidebarSettled] = useState(true);
   const [maximized, setMaximized] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
@@ -136,6 +137,10 @@ function App() {
       .then(setAvailableUpdate)
       .catch((err) => console.error("Background update check failed:", err));
   }, []);
+
+  useEffect(() => {
+    if (!sidebarOpen) setSidebarSettled(false);
+  }, [sidebarOpen]);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -981,10 +986,14 @@ function App() {
     content = (
     <div className="flex h-full overflow-hidden">
       <div
-        className="shrink-0 overflow-hidden"
+        className="shrink-0"
         style={{
           width: sidebarOpen ? 272 : 0,
           transition: "width 220ms cubic-bezier(0.4, 0, 0.2, 1)",
+          overflow: sidebarSettled ? "visible" : "hidden",
+        }}
+        onTransitionEnd={() => {
+          if (sidebarOpen) setSidebarSettled(true);
         }}
       >
         <Sidebar
@@ -1013,6 +1022,9 @@ function App() {
           plan={plan}
           onSignIn={() => setShowAuth(true)}
           onSignOut={() => supabase.auth.signOut()}
+          theme={settings.theme}
+          onThemeChange={(theme) => updateSettings({ theme })}
+          onCheckForUpdate={handleCheckForUpdate}
         />
       </div>
 

@@ -565,12 +565,12 @@ fn tool_set_clipboard(text: &str) -> String {
     }
 }
 
-/// Returns a data: URL of a PNG screenshot of the monitor the user is currently
-/// on (wherever the cursor is), or an error string on failure. Falls back to
-/// the primary monitor if the cursor position can't be determined.
-fn tool_take_screenshot(app: &AppHandle) -> Result<String, String> {
-    use base64::Engine;
-
+/// Captures a PNG screenshot of the monitor the user is currently on
+/// (wherever the cursor is), or an error string on failure. Falls back to
+/// the primary monitor if the cursor position can't be determined. Shared by
+/// tool_take_screenshot (shows the model the screen) and tool_save_screenshot
+/// (writes it to disk) so there's one capture path for both.
+fn capture_screenshot_png(app: &AppHandle) -> Result<Vec<u8>, String> {
     let cursor = app.cursor_position().ok();
     let monitor = cursor
         .and_then(|pos| xcap::Monitor::from_point(pos.x as i32, pos.y as i32).ok())
@@ -590,9 +590,46 @@ fn tool_take_screenshot(app: &AppHandle) -> Result<String, String> {
     image::DynamicImage::ImageRgba8(img)
         .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
         .map_err(|e| format!("Error encoding screenshot: {e}"))?;
+    Ok(buf)
+}
 
+/// Returns a data: URL of a PNG screenshot, for showing the model what's
+/// currently on screen (not saved to disk — see tool_save_screenshot).
+fn tool_take_screenshot(app: &AppHandle) -> Result<String, String> {
+    use base64::Engine;
+    let buf = capture_screenshot_png(app)?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
     Ok(format!("data:image/png;base64,{b64}"))
+}
+
+/// Captures a screenshot and writes it straight to disk as a PNG — unlike
+/// take_screenshot, which only returns image data for the model to look at.
+/// Defaults to ~/Downloads/screenshot_<unix-epoch-seconds>.png when no path
+/// is given.
+fn tool_save_screenshot(app: &AppHandle, path: Option<&str>) -> Result<String, String> {
+    let buf = capture_screenshot_png(app)?;
+
+    let default_path;
+    let path = match path {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            default_path = format!("~/Downloads/screenshot_{secs}.png");
+            &default_path
+        }
+    };
+
+    let file = resolve_path(path);
+    if let Some(parent) = file.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return Err(format!("Error creating parent directories for {}: {}", file.display(), e));
+        }
+    }
+    std::fs::write(&file, &buf).map_err(|e| format!("Error writing screenshot to {}: {}", file.display(), e))?;
+    Ok(format!("Screenshot saved to {}", file.display()))
 }
 
 fn tool_list_processes() -> String {
@@ -790,8 +827,24 @@ fn tools_schema() -> Value {
             "type": "function",
             "function": {
                 "name": "take_screenshot",
-                "description": "Capture a screenshot of the primary display so you can see what's currently on screen.",
+                "description": "Capture a screenshot of the primary display so you can see what's currently on screen. This does NOT save a file — use save_screenshot if the user wants the image saved to disk.",
                 "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "save_screenshot",
+                "description": "Capture a screenshot and save it directly to disk as a PNG (e.g. to the user's Downloads folder). Use this — not take_screenshot plus write_file — whenever the user wants a screenshot saved as a file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Where to save the PNG, e.g. '~/Downloads/screenshot.png'. Optional — defaults to a timestamped file in ~/Downloads."
+                        }
+                    }
+                }
             }
         },
         {
@@ -859,14 +912,17 @@ fn system_prompt() -> String {
     format!(
         "You are Rofiant, an AI assistant with real, direct access to the user's computer through \
 tools: list_directory, read_file, write_file, edit_file, run_command, get_clipboard, set_clipboard, \
-take_screenshot, list_processes, kill_process, open_app, and send_notification. \
+take_screenshot, save_screenshot, list_processes, kill_process, open_app, and send_notification. \
 These are not simulations — they execute for real on the user's machine. \
 The user's home directory is exactly \
 `{home}`. Use paths relative to it (e.g. 'Desktop/notes.txt') or prefixed with '~/' — never guess \
 a literal username like /home/user/... or /Users/username/..., since it will resolve to the wrong \
 place or fail with a permission error. Prefer open_app over run_command for launching GUI \
 applications, since run_command waits for the process to exit and will hang. Use take_screenshot \
-when you need to see what's currently on screen. Use tools proactively whenever they would help \
+when you need to see what's currently on screen; use save_screenshot instead when the user wants \
+the screenshot saved as a file — it captures and writes the PNG directly, so never try to save a \
+screenshot via run_command (scrot, import, etc.) or by piping take_screenshot's output through \
+write_file. Use tools proactively whenever they would help \
 answer a request. Never claim you lack access to the file system, the terminal, the clipboard, \
 running processes, or the screen — you have it. Act like a normal, capable assistant: just do the \
 task. Only pause to ask before something destructive or irreversible (deleting data, killing an \
@@ -966,7 +1022,10 @@ fn respond_tool_approval(
 /// asking, same as before.
 fn tool_needs_approval(name: &str) -> bool {
     mcp::is_mcp_tool(name)
-        || matches!(name, "write_file" | "edit_file" | "run_command" | "kill_process" | "open_app")
+        || matches!(
+            name,
+            "write_file" | "edit_file" | "run_command" | "kill_process" | "open_app" | "save_screenshot"
+        )
 }
 
 fn tool_approval_summary(tool: &str, args: &Value) -> String {
@@ -978,6 +1037,10 @@ fn tool_approval_summary(tool: &str, args: &Value) -> String {
         "run_command" => format!("Run `{command}`"),
         "kill_process" => format!("Kill process {}", args["pid"].as_u64().unwrap_or(0)),
         "open_app" => format!("Launch `{command}`"),
+        "save_screenshot" => match args["path"].as_str() {
+            Some(p) => format!("Save screenshot to `{p}`"),
+            None => "Save screenshot to Downloads".to_string(),
+        },
         other => format!("Run `{other}`"),
     }
 }
@@ -1027,6 +1090,7 @@ const TOOL_NAMES: &[&str] = &[
     "get_clipboard",
     "set_clipboard",
     "take_screenshot",
+    "save_screenshot",
     "list_processes",
     "kill_process",
     "open_app",
@@ -1379,6 +1443,7 @@ async fn run_agent(
                 "get_clipboard" => "@@tool:get_clipboard@@Reading clipboard\n\n".to_string(),
                 "set_clipboard" => "@@tool:set_clipboard@@Setting clipboard\n\n".to_string(),
                 "take_screenshot" => "@@tool:take_screenshot@@Taking screenshot\n\n".to_string(),
+                "save_screenshot" => "@@tool:save_screenshot@@Saving screenshot\n\n".to_string(),
                 "list_processes" => "@@tool:list_processes@@Listing processes\n\n".to_string(),
                 "kill_process" => {
                     let pid = args["pid"].as_u64().unwrap_or(0);
@@ -1470,6 +1535,13 @@ async fn run_agent(
                     }
                     Err(e) => e,
                 },
+                "save_screenshot" => {
+                    let path = args["path"].as_str();
+                    match tool_save_screenshot(app, path) {
+                        Ok(message) => message,
+                        Err(e) => e,
+                    }
+                }
                 "list_processes" => tool_list_processes(),
                 "kill_process" => {
                     let pid = args["pid"].as_u64().unwrap_or(0) as u32;
@@ -1739,6 +1811,118 @@ async fn ollama_delete_model(model: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Downloads the official installer for the current OS and launches it.
+/// The native installer/app handles its own permission prompts (UAC on
+/// Windows, the "install command line tools" flow on macOS, sudo inside a
+/// terminal on Linux) — Rofiant just fetches and hands off to it.
+#[tauri::command]
+async fn ollama_install() -> Result<(), String> {
+    let client = streaming_http_client();
+    ollama_install_impl(&client).await
+}
+
+#[cfg(target_os = "macos")]
+async fn ollama_install_impl(client: &reqwest::Client) -> Result<(), String> {
+    let bytes = client
+        .get("https://ollama.com/download/Ollama-darwin.zip")
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?
+        .bytes()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?;
+
+    let dest = std::env::temp_dir().join(format!("rofiant-ollama-install-{}", std::process::id()));
+    std::fs::create_dir_all(&dest).map_err(|e| format!("Could not create temp dir: {e}"))?;
+    let zip_path = dest.join("Ollama-darwin.zip");
+    std::fs::write(&zip_path, &bytes).map_err(|e| format!("Could not save installer: {e}"))?;
+
+    // ditto (not unzip) preserves the app bundle's resource fork and code
+    // signature, which a plain zip extract can corrupt.
+    let status = std::process::Command::new("ditto")
+        .arg("-xk")
+        .arg(&zip_path)
+        .arg(&dest)
+        .status()
+        .map_err(|e| format!("Could not extract installer: {e}"))?;
+    if !status.success() {
+        return Err("Could not extract Ollama.app from the downloaded archive".into());
+    }
+
+    std::process::Command::new("open")
+        .arg(dest.join("Ollama.app"))
+        .spawn()
+        .map_err(|e| format!("Could not launch Ollama.app: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+async fn ollama_install_impl(client: &reqwest::Client) -> Result<(), String> {
+    let bytes = client
+        .get("https://ollama.com/download/OllamaSetup.exe")
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?
+        .bytes()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?;
+
+    let dest = std::env::temp_dir().join(format!("rofiant-ollama-install-{}", std::process::id()));
+    std::fs::create_dir_all(&dest).map_err(|e| format!("Could not create temp dir: {e}"))?;
+    let exe_path = dest.join("OllamaSetup.exe");
+    std::fs::write(&exe_path, &bytes).map_err(|e| format!("Could not save installer: {e}"))?;
+
+    std::process::Command::new(&exe_path)
+        .spawn()
+        .map_err(|e| format!("Could not launch installer: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn ollama_install_impl(client: &reqwest::Client) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = client
+        .get("https://ollama.com/install.sh")
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?;
+
+    let dest = std::env::temp_dir().join(format!("rofiant-ollama-install-{}", std::process::id()));
+    std::fs::create_dir_all(&dest).map_err(|e| format!("Could not create temp dir: {e}"))?;
+    let script_path = dest.join("install.sh");
+    std::fs::write(&script_path, script).map_err(|e| format!("Could not save installer: {e}"))?;
+    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("Could not prepare installer: {e}"))?;
+
+    // The script needs sudo for the systemd service step, so it has to run
+    // in a visible terminal the user can type a password into.
+    let inner = format!(
+        "sh '{}'; echo; echo 'Press Enter to close.'; read _",
+        script_path.display()
+    );
+    let inner = inner.as_str();
+    let terminals: [(&str, &[&str]); 5] = [
+        ("x-terminal-emulator", &["-e", inner]),
+        ("gnome-terminal", &["--", "sh", "-c", inner]),
+        ("konsole", &["-e", "sh", "-c", inner]),
+        ("xfce4-terminal", &["-e", inner]),
+        ("xterm", &["-e", inner]),
+    ];
+    for (bin, args) in terminals {
+        if std::process::Command::new(bin).args(args).spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "No terminal emulator found. Run this in a terminal: sh '{}'",
+        script_path.display()
+    ))
+}
+
 #[tauri::command]
 async fn mcp_connect(
     state: State<'_, mcp::McpState>,
@@ -1915,6 +2099,7 @@ pub fn run() {
             ollama_list_models,
             ollama_pull_model,
             ollama_delete_model,
+            ollama_install,
             mcp_connect,
             mcp_disconnect,
             set_minimize_to_tray,

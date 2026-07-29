@@ -1,9 +1,15 @@
-import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Cloud, HardDrive, Lock, Server, TriangleAlert } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronDown, ChevronRight, Cloud, HardDrive, Lock, Server, TriangleAlert } from "lucide-react";
 import { ALL_MODELS, isLogfareModel, isProModel } from "../../lib/models";
-import { customModelId, type CustomProvider } from "../../lib/providers";
+import { customModelId, DMC_MODELS, isDmcProvider, type CustomProvider } from "../../lib/providers";
 import { getKiroAutoModel } from "../../lib/groq";
 import { EASY_LOCAL_MODELS, OLLAMA_BASE_URL, listInstalledOllamaModels } from "../../lib/ollama";
+
+// Space the custom titlebar (32px tall, no clipping ancestor) needs kept
+// clear above any upward-opening menu or flyout, plus a small buffer.
+const TITLEBAR_HEIGHT = 32;
+const TOP_GAP = 16;
+const FLYOUT_WIDTH = 288; // w-72
 
 function PickerRow({
   icon: Icon,
@@ -45,6 +51,61 @@ function PickerRow({
       </span>
       {active && <Check className="w-3.5 h-3.5 text-accent-primary shrink-0 mt-0.5" />}
     </button>
+  );
+}
+
+// A category row in the top-level menu (e.g. "Local models") that reveals
+// its actual model list in a flyout on hover, rather than dumping every
+// model into one flat scrolling list — with many local/DMC/cloud models
+// installed, that flat list could grow taller than the window itself and
+// spill out past the top of the app, over the custom titlebar.
+function GroupMenuItem({
+  icon: Icon,
+  label,
+  activeLabel,
+  children,
+}: {
+  icon: typeof Cloud;
+  label: string;
+  activeLabel?: string;
+  children: ReactNode;
+}) {
+  const [flyout, setFlyout] = useState<{ maxHeight: number; side: "left" | "right" } | null>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  function open() {
+    const rect = rowRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setFlyout({
+      maxHeight: Math.max(160, rect.bottom - TITLEBAR_HEIGHT - TOP_GAP),
+      side: rect.right + FLYOUT_WIDTH > window.innerWidth ? "left" : "right",
+    });
+  }
+
+  return (
+    <div ref={rowRef} className="relative" onMouseEnter={open} onMouseLeave={() => setFlyout(null)}>
+      <button
+        type="button"
+        className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-background-tertiary/60 transition-colors"
+      >
+        <Icon className="w-3.5 h-3.5 shrink-0 text-foreground-muted" />
+        <span className="flex-1 text-[13px] text-foreground font-medium truncate">{label}</span>
+        {activeLabel && (
+          <span className="text-[11px] text-foreground-muted truncate max-w-[6.5rem]">{activeLabel}</span>
+        )}
+        <ChevronRight className="w-3.5 h-3.5 text-foreground-muted shrink-0" />
+      </button>
+      {flyout && (
+        <div
+          className={`absolute bottom-0 ${
+            flyout.side === "right" ? "left-full ml-1" : "right-full mr-1"
+          } w-72 overflow-y-auto rounded-lg border border-border bg-card shadow-lg py-1 z-20`}
+          style={{ maxHeight: flyout.maxHeight }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -121,10 +182,18 @@ export function ModelPicker({
       })),
   ];
 
+  // DMC is a built-in gateway, not a user-added one — it gets its own
+  // group, ordered to match DMC_MODELS rather than array/insertion order.
+  const dmcRows = DMC_MODELS.map((m) => customProviders.find((p) => isDmcProvider(p) && p.model === m.id)).filter(
+    (p): p is CustomProvider => p != null,
+  );
+
   // Arbitrary OpenAI-compatible endpoints the user pointed at manually in
   // Settings → Providers — distinct from local Ollama models above, so they
   // get their own group instead of blending into "local".
-  const remoteCustomProviders = customProviders.filter((p) => p.baseUrl !== OLLAMA_BASE_URL);
+  const remoteCustomProviders = customProviders.filter(
+    (p) => p.baseUrl !== OLLAMA_BASE_URL && !isDmcProvider(p),
+  );
 
   return (
     <div className="relative" ref={modelRef}>
@@ -137,36 +206,59 @@ export function ModelPicker({
         <ChevronDown className="w-3 h-3" />
       </button>
       {modelOpen && (
-        <div className="absolute bottom-full left-0 mb-2 w-72 max-h-[70vh] overflow-y-auto rounded-lg border border-border bg-card shadow-lg py-1 z-10">
+        <div className="absolute bottom-full left-0 mb-2 w-72 rounded-lg border border-border bg-card shadow-lg py-1 z-10">
           {localRows.length > 0 && (
-            <div>
-              <div className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium text-foreground-muted uppercase tracking-wide">
-                Local models
-              </div>
-              <div className="max-h-40 overflow-y-auto">
-                {localRows.map((row) => (
-                  <PickerRow
-                    key={row.key}
-                    icon={HardDrive}
-                    name={row.name}
-                    subtitle={row.subtitle}
-                    active={row.active}
-                    onClick={() => {
-                      row.onClick();
-                      setModelOpen(false);
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
+            <GroupMenuItem icon={HardDrive} label="Local models" activeLabel={localRows.find((r) => r.active)?.name}>
+              {localRows.map((row) => (
+                <PickerRow
+                  key={row.key}
+                  icon={HardDrive}
+                  name={row.name}
+                  subtitle={row.subtitle}
+                  active={row.active}
+                  onClick={() => {
+                    row.onClick();
+                    setModelOpen(false);
+                  }}
+                />
+              ))}
+            </GroupMenuItem>
+          )}
+          {dmcRows.length > 0 && (
+            <>
+              {localRows.length > 0 && <div className="my-1 border-t border-border" />}
+              <GroupMenuItem
+                icon={Cloud}
+                label="DMC"
+                activeLabel={dmcRows.find((p) => model === customModelId(p.id))?.model}
+              >
+                {dmcRows.map((p) => {
+                  const id = customModelId(p.id);
+                  return (
+                    <PickerRow
+                      key={p.id}
+                      icon={Cloud}
+                      name={p.model}
+                      subtitle="via DMC Gateway"
+                      active={model === id}
+                      onClick={() => {
+                        onSelectModel(id);
+                        setModelOpen(false);
+                      }}
+                    />
+                  );
+                })}
+              </GroupMenuItem>
+            </>
           )}
           {remoteCustomProviders.length > 0 && (
-            <div>
-              {localRows.length > 0 && <div className="my-1 border-t border-border" />}
-              <div className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium text-foreground-muted uppercase tracking-wide">
-                Custom providers
-              </div>
-              <div className="max-h-40 overflow-y-auto">
+            <>
+              {(localRows.length > 0 || dmcRows.length > 0) && <div className="my-1 border-t border-border" />}
+              <GroupMenuItem
+                icon={Server}
+                label="Custom providers"
+                activeLabel={remoteCustomProviders.find((p) => model === customModelId(p.id))?.name}
+              >
                 {remoteCustomProviders.map((p) => {
                   const id = customModelId(p.id);
                   return (
@@ -183,16 +275,17 @@ export function ModelPicker({
                     />
                   );
                 })}
-              </div>
-            </div>
+              </GroupMenuItem>
+            </>
           )}
-          <div>
-            {(localRows.length > 0 || remoteCustomProviders.length > 0) && (
-              <div className="my-1 border-t border-border" />
-            )}
-            <div className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium text-foreground-muted uppercase tracking-wide">
-              Cloud models
-            </div>
+          {(localRows.length > 0 || dmcRows.length > 0 || remoteCustomProviders.length > 0) && (
+            <div className="my-1 border-t border-border" />
+          )}
+          <GroupMenuItem
+            icon={Cloud}
+            label="Cloud models"
+            activeLabel={ALL_MODELS.find((m) => (isPro || !isProModel(m.id)) && model === m.id)?.name}
+          >
             {ALL_MODELS.map((m) => {
               const locked = !isPro && isProModel(m.id);
               return (
@@ -219,7 +312,7 @@ export function ModelPicker({
                       )}
                       {isLogfareModel(m.id) && (
                         <span
-                          title="Free community-run inference — uptime isn't guaranteed and requests may fail"
+                          title="Free community-run inference. Uptime isn't guaranteed and requests may fail."
                           onMouseEnter={(e) => setLogfareTooltipRect(e.currentTarget.getBoundingClientRect())}
                           onMouseLeave={() => setLogfareTooltipRect(null)}
                           className="flex items-center gap-0.5 text-[10px] font-medium text-accent-warning bg-accent-warning/10 border border-accent-warning/30 rounded px-1 py-0.5"
@@ -233,7 +326,7 @@ export function ModelPicker({
                 />
               );
             })}
-          </div>
+          </GroupMenuItem>
         </div>
       )}
       {logfareTooltipRect && (

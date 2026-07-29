@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Plug, Plus, Check, Trash2, X, Eye, EyeOff } from "lucide-react";
-import { customModelId, type CustomProvider } from "../../lib/providers";
+import { Plug, Plus, Check, Pencil, Trash2, X, Eye, EyeOff } from "lucide-react";
+import { customModelId, isDmcProvider, type CustomProvider } from "../../lib/providers";
 import type { AppSettings } from "../../lib/settings";
 import type { ConfirmFn } from "../ConfirmDialog";
 import { removeProviderFromSettings } from "./shared";
@@ -16,19 +16,46 @@ export function ProvidersSection({
 }) {
   const [newProvider, setNewProvider] = useState({ name: "", baseUrl: "", model: "", apiKey: "" });
   const [showApiKey, setShowApiKey] = useState(false);
-  const [addProviderOpen, setAddProviderOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
-  function addProvider() {
+  function openAddDialog() {
+    setEditingId(null);
+    setNewProvider({ name: "", baseUrl: "", model: "", apiKey: "" });
+    setShowApiKey(false);
+    setDialogOpen(true);
+  }
+
+  function openEditDialog(p: CustomProvider) {
+    setEditingId(p.id);
+    setNewProvider({ name: p.name, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey });
+    setShowApiKey(false);
+    setDialogOpen(true);
+  }
+
+  function closeDialog() {
+    setDialogOpen(false);
+    setEditingId(null);
+  }
+
+  function saveProvider() {
     const name = newProvider.name.trim();
     const baseUrl = newProvider.baseUrl.trim().replace(/\/+$/, "");
     const model = newProvider.model.trim();
     const apiKey = newProvider.apiKey.trim();
     if (!name || !baseUrl || !model || !apiKey || !/^https?:\/\//.test(baseUrl)) return;
-    const provider: CustomProvider = { id: crypto.randomUUID(), name, baseUrl, model, apiKey };
-    onChange({ customProviders: [...settings.customProviders, provider], model: customModelId(provider.id) });
-    setNewProvider({ name: "", baseUrl: "", model: "", apiKey: "" });
-    setShowApiKey(false);
-    setAddProviderOpen(false);
+
+    if (editingId) {
+      onChange({
+        customProviders: settings.customProviders.map((p) =>
+          p.id === editingId ? { ...p, name, baseUrl, model, apiKey } : p,
+        ),
+      });
+    } else {
+      const provider: CustomProvider = { id: crypto.randomUUID(), name, baseUrl, model, apiKey };
+      onChange({ customProviders: [...settings.customProviders, provider], model: customModelId(provider.id) });
+    }
+    closeDialog();
   }
 
   async function removeProvider(id: string, name: string) {
@@ -54,7 +81,7 @@ export function ProvidersSection({
         </div>
         <button
           type="button"
-          onClick={() => setAddProviderOpen(true)}
+          onClick={openAddDialog}
           className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition-opacity shrink-0"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -62,7 +89,7 @@ export function ProvidersSection({
         </button>
       </div>
 
-      {settings.customProviders.length === 0 ? (
+      {settings.customProviders.filter((p) => !isDmcProvider(p)).length === 0 ? (
         <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6">
           <Plug className="w-5 h-5 text-foreground-muted mb-2" />
           <div className="text-[13px] text-foreground-secondary">No providers yet</div>
@@ -72,7 +99,7 @@ export function ProvidersSection({
         </div>
       ) : (
         <div className="space-y-1.5 mb-6">
-          {settings.customProviders.map((p) => {
+          {settings.customProviders.filter((p) => !isDmcProvider(p)).map((p) => {
             const id = customModelId(p.id);
             const active = settings.model === id;
             return (
@@ -97,6 +124,15 @@ export function ProvidersSection({
                 </button>
                 <button
                   type="button"
+                  onClick={() => openEditDialog(p)}
+                  title="Edit provider"
+                  aria-label={`Edit provider "${p.name}"`}
+                  className="flex items-center justify-center w-7 h-7 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors shrink-0"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => void removeProvider(p.id, p.name)}
                   title="Remove provider"
                   aria-label={`Remove provider "${p.name}"`}
@@ -110,10 +146,10 @@ export function ProvidersSection({
         </div>
       )}
 
-      {addProviderOpen && (
+      {dialogOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 animate-[fadeIn_150ms_ease-out]"
-          onClick={() => setAddProviderOpen(false)}
+          onClick={closeDialog}
         >
           <div
             role="dialog"
@@ -122,12 +158,14 @@ export function ProvidersSection({
             className="w-full max-w-sm rounded-lg border border-border bg-background shadow-xl p-4 space-y-2.5 animate-[modalIn_180ms_ease-out]"
           >
             <div className="flex items-center justify-between mb-0.5">
-              <div className="text-[13px] font-medium text-foreground">Add provider</div>
+              <div className="text-[13px] font-medium text-foreground">
+                {editingId ? "Edit provider" : "Add provider"}
+              </div>
               <button
                 type="button"
-                onClick={() => setAddProviderOpen(false)}
+                onClick={closeDialog}
                 title="Close"
-                aria-label="Close add provider dialog"
+                aria-label="Close provider dialog"
                 className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
               >
                 <X className="w-3.5 h-3.5" />
@@ -173,14 +211,14 @@ export function ProvidersSection({
             <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setAddProviderOpen(false)}
+                onClick={closeDialog}
                 className="h-8 px-3 rounded-lg border border-border text-[13px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={addProvider}
+                onClick={saveProvider}
                 disabled={
                   !newProvider.name.trim() ||
                   !/^https?:\/\//.test(newProvider.baseUrl.trim()) ||
@@ -189,7 +227,7 @@ export function ProvidersSection({
                 }
                 className="h-8 px-3 rounded-lg bg-foreground text-background text-[13px] font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
               >
-                Add provider
+                {editingId ? "Save changes" : "Add provider"}
               </button>
             </div>
           </div>
