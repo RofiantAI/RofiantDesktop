@@ -31,6 +31,23 @@ export const PRO_MODELS = [
 
 export const ALL_MODELS = [...FREE_MODELS, ...PRO_MODELS];
 
+// DMC is a Rofiant-hosted gateway (see supabase/functions/dmc-proxy and
+// model_uses_dmc in src-tauri/src/lib.rs — kept in sync manually, same note
+// as PRO_MODEL_IDS in supabase/functions/groq-proxy). Free for everyone, so
+// it's kept out of ALL_MODELS/isProModel and given its own group in the
+// model picker instead of blending into "Cloud models".
+export const DMC_MODELS = [
+  { id: "GLM-4.7-Flash", name: "GLM 4.7 Flash" },
+  { id: "Qwen3.6-35B-A3B-NVFP4", name: "Qwen 3.6 35B A3B" },
+  { id: "Qwen3-Coder-Next-FP8", name: "Qwen3 Coder Next" },
+] as const;
+
+const DMC_MODEL_IDS = new Set<string>(DMC_MODELS.map((m) => m.id));
+
+export function isDmcModel(id: string): boolean {
+  return DMC_MODEL_IDS.has(id);
+}
+
 const FREE_MODEL_IDS = new Set<string>(FREE_MODELS.map((m) => m.id));
 const ALL_MODEL_IDS = new Set<string>(ALL_MODELS.map((m) => m.id));
 
@@ -47,7 +64,7 @@ export function defaultModelForPlan(isPro: boolean): string {
 }
 
 export function clampModelForPlan(model: string, isPro: boolean): string {
-  if (model.startsWith("custom:")) return model;
+  if (model.startsWith("custom:") || isDmcModel(model)) return model;
   if (!ALL_MODEL_IDS.has(model)) return defaultModelForPlan(isPro);
   if (!isPro && isProModel(model)) return DEFAULT_FREE_MODEL;
   return model;

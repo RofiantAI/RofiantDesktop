@@ -108,6 +108,7 @@ struct FileChangePayload {
 
 const GROQ_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/groq-proxy";
 const LOGFARE_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/logfare-proxy";
+const DMC_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/dmc-proxy";
 
 // reqwest::Client::new() has no timeout by default, so a dead network (e.g.
 // offline, DNS black hole) hangs the request forever with no way for the
@@ -138,6 +139,14 @@ fn streaming_http_client() -> reqwest::Client {
 // pipelines (same note as PRO_MODEL_IDS in supabase/functions/groq-proxy).
 fn model_uses_logfare(model: &str) -> bool {
     model == "kiro-auto"
+}
+
+// Mirrors DMC_MODELS in src/lib/models.ts — kept in sync manually, same note
+// as above. DMC is Rofiant-hosted (dmc-proxy holds the shared DMC_API_KEY
+// secret), so these route like Groq/Logfare rather than through a
+// user-supplied ProviderConfig.
+fn model_uses_dmc(model: &str) -> bool {
+    matches!(model, "GLM-4.7-Flash" | "Qwen3.6-35B-A3B-NVFP4" | "Qwen3-Coder-Next-FP8")
 }
 
 const LOGFARE_STATUS_URL: &str = "https://logfare.ai/v1/status";
@@ -1276,6 +1285,7 @@ async fn run_agent(
             p.api_key.as_str(),
         ),
         None if model_uses_logfare(model) => (LOGFARE_PROXY_URL.to_string(), access_token),
+        None if model_uses_dmc(model) => (DMC_PROXY_URL.to_string(), access_token),
         None => (GROQ_PROXY_URL.to_string(), access_token),
     };
     // "kiro-auto" is the user-facing selection everywhere else (routing

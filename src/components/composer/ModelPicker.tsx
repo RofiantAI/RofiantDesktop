@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, Cloud, HardDrive, Lock, Server, TriangleAlert } from "lucide-react";
-import { ALL_MODELS, isLogfareModel, isProModel } from "../../lib/models";
-import { customModelId, DMC_MODELS, isDmcProvider, type CustomProvider } from "../../lib/providers";
+import { ALL_MODELS, DMC_MODELS, isLogfareModel, isProModel } from "../../lib/models";
+import { customModelId, type CustomProvider } from "../../lib/providers";
 import { getKiroAutoModel } from "../../lib/groq";
 import { EASY_LOCAL_MODELS, OLLAMA_BASE_URL, listInstalledOllamaModels } from "../../lib/ollama";
 
@@ -152,7 +152,7 @@ export function ModelPicker({
       .catch(() => setInstalledLocalModels([]));
   }, [modelOpen]);
 
-  const activeModel = ALL_MODELS.find((m) => m.id === model);
+  const activeModel = ALL_MODELS.find((m) => m.id === model) ?? DMC_MODELS.find((m) => m.id === model);
   const activeCustomProvider = customProviders.find((p) => customModelId(p.id) === model);
 
   // Models pulled through Ollama (either via the Models settings tab or
@@ -182,18 +182,10 @@ export function ModelPicker({
       })),
   ];
 
-  // DMC is a built-in gateway, not a user-added one — it gets its own
-  // group, ordered to match DMC_MODELS rather than array/insertion order.
-  const dmcRows = DMC_MODELS.map((m) => customProviders.find((p) => isDmcProvider(p) && p.model === m.id)).filter(
-    (p): p is CustomProvider => p != null,
-  );
-
   // Arbitrary OpenAI-compatible endpoints the user pointed at manually in
   // Settings → Providers — distinct from local Ollama models above, so they
   // get their own group instead of blending into "local".
-  const remoteCustomProviders = customProviders.filter(
-    (p) => p.baseUrl !== OLLAMA_BASE_URL && !isDmcProvider(p),
-  );
+  const remoteCustomProviders = customProviders.filter((p) => p.baseUrl !== OLLAMA_BASE_URL);
 
   return (
     <div className="relative" ref={modelRef}>
@@ -224,36 +216,25 @@ export function ModelPicker({
               ))}
             </GroupMenuItem>
           )}
-          {dmcRows.length > 0 && (
-            <>
-              {localRows.length > 0 && <div className="my-1 border-t border-border" />}
-              <GroupMenuItem
+          {localRows.length > 0 && <div className="my-1 border-t border-border" />}
+          <GroupMenuItem icon={Cloud} label="DMC" activeLabel={DMC_MODELS.find((m) => model === m.id)?.name}>
+            {DMC_MODELS.map((m) => (
+              <PickerRow
+                key={m.id}
                 icon={Cloud}
-                label="DMC"
-                activeLabel={dmcRows.find((p) => model === customModelId(p.id))?.model}
-              >
-                {dmcRows.map((p) => {
-                  const id = customModelId(p.id);
-                  return (
-                    <PickerRow
-                      key={p.id}
-                      icon={Cloud}
-                      name={p.model}
-                      subtitle="via DMC Gateway"
-                      active={model === id}
-                      onClick={() => {
-                        onSelectModel(id);
-                        setModelOpen(false);
-                      }}
-                    />
-                  );
-                })}
-              </GroupMenuItem>
-            </>
-          )}
+                name={m.name}
+                subtitle="via DMC Gateway"
+                active={model === m.id}
+                onClick={() => {
+                  onSelectModel(m.id);
+                  setModelOpen(false);
+                }}
+              />
+            ))}
+          </GroupMenuItem>
           {remoteCustomProviders.length > 0 && (
             <>
-              {(localRows.length > 0 || dmcRows.length > 0) && <div className="my-1 border-t border-border" />}
+              <div className="my-1 border-t border-border" />
               <GroupMenuItem
                 icon={Server}
                 label="Custom providers"
@@ -278,9 +259,7 @@ export function ModelPicker({
               </GroupMenuItem>
             </>
           )}
-          {(localRows.length > 0 || dmcRows.length > 0 || remoteCustomProviders.length > 0) && (
-            <div className="my-1 border-t border-border" />
-          )}
+          <div className="my-1 border-t border-border" />
           <GroupMenuItem
             icon={Cloud}
             label="Cloud models"

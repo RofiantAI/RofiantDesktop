@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Plug, Plus, Check, Pencil, Trash2, X, Eye, EyeOff } from "lucide-react";
-import { customModelId, isDmcProvider, type CustomProvider } from "../../lib/providers";
+import { customModelId, type CustomProvider } from "../../lib/providers";
 import type { AppSettings } from "../../lib/settings";
 import type { ConfirmFn } from "../ConfirmDialog";
 import { removeProviderFromSettings } from "./shared";
@@ -89,7 +89,7 @@ export function ProvidersSection({
         </button>
       </div>
 
-      {settings.customProviders.filter((p) => !isDmcProvider(p)).length === 0 ? (
+      {settings.customProviders.length === 0 ? (
         <div className="flex flex-col items-center justify-center text-center rounded-lg border border-dashed border-border py-8 mb-6">
           <Plug className="w-5 h-5 text-foreground-muted mb-2" />
           <div className="text-[13px] text-foreground-secondary">No providers yet</div>
@@ -99,7 +99,7 @@ export function ProvidersSection({
         </div>
       ) : (
         <div className="space-y-1.5 mb-6">
-          {settings.customProviders.filter((p) => !isDmcProvider(p)).map((p) => {
+          {settings.customProviders.map((p) => {
             const id = customModelId(p.id);
             const active = settings.model === id;
             return (

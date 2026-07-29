@@ -1,5 +1,4 @@
 import type { CustomProvider } from "./providers";
-import { reconcileDmcSettings } from "./providers";
 import type { Agent, ChatMode } from "./agents";
 import type { McpServerConfig } from "./mcp";
 
@@ -63,7 +62,7 @@ export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    return reconcileDmcSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(raw) });
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
