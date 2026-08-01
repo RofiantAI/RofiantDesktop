@@ -47,14 +47,14 @@ describe("sendChatMessage", () => {
     );
 
     await vi.waitFor(() => expect(invokeMock).toHaveBeenCalled());
-    fire("chat-chunk", { request_id: "not-this-one", delta: "ignored" });
-    fire("chat-chunk", { request_id: requestId, delta: "hello" });
+    fire("chat-chunk", { request_id: "not-this-one", delta: "ignored", replace: false });
+    fire("chat-chunk", { request_id: requestId, delta: "hello", replace: false });
     fire("chat-done", { request_id: "not-this-one" });
     fire("chat-done", { request_id: requestId });
 
     await promise;
     expect(onDelta).toHaveBeenCalledTimes(1);
-    expect(onDelta).toHaveBeenCalledWith("hello");
+    expect(onDelta).toHaveBeenCalledWith("hello", false);
   });
 
   it("rejects with the error message on chat-error", async () => {

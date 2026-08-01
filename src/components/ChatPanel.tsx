@@ -5,17 +5,21 @@ import type { AppSettings } from "../lib/settings";
 import type { ChatMode } from "../lib/agents";
 import { MessageBubble } from "./MessageBubble";
 import { Composer } from "./Composer";
+// Project/worktree attach is disabled for now — see ProjectBar.tsx,
+// lib/git.ts, and git_worktree_* in lib.rs, all left in place to resume.
+// import { ProjectBar } from "./ProjectBar";
 import { ToolApprovalCard } from "./ToolApprovalCard";
 import type { ToolApprovalRequest } from "../lib/groq";
 
 export function ChatPanel({
   conversation,
+  conversations,
   onSend,
   onStop,
   settings,
   isPro,
   onModelChange,
-  onSelectLocalModel,
+  onEffortChange,
   onModeChange,
   onAgentChange,
   accessToken,
@@ -24,12 +28,13 @@ export function ChatPanel({
   onRejectTool,
 }: {
   conversation: Conversation | null;
+  conversations: Conversation[];
   onSend: (text: string, imageDataUrl?: string) => void;
   onStop: () => void;
   settings: AppSettings;
   isPro: boolean;
   onModelChange: (id: string) => void;
-  onSelectLocalModel: (modelId: string) => void;
+  onEffortChange: (effort: AppSettings["reasoningEffort"]) => void;
   onModeChange: (mode: ChatMode) => void;
   onAgentChange: (agentId: string | null) => void;
   accessToken: string | null;
@@ -46,31 +51,33 @@ export function ChatPanel({
 
   if (!conversation) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center min-h-0">
-        <p className="text-2xl text-foreground-secondary mb-6">
-          What can I help with?
-        </p>
-        <div className="w-full">
-          <Composer
-            disabled={false}
-            isRunning={false}
-            onSend={onSend}
-            onStop={onStop}
-            model={settings.model}
-            isPro={isPro}
-            onModelChange={onModelChange}
-            onSelectLocalModel={onSelectLocalModel}
-            spellcheck={settings.spellcheck}
-            sendKey={settings.sendKey}
-            accessToken={accessToken}
-            customProviders={settings.customProviders}
-            mode={settings.chatMode}
-            onModeChange={onModeChange}
-            agents={settings.agents}
-            activeAgentId={settings.activeAgentId}
-            onAgentChange={onAgentChange}
-          />
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-2xl text-foreground-secondary">What can I help with?</p>
         </div>
+        <Composer
+          disabled={false}
+          isRunning={false}
+          onSend={onSend}
+          onStop={onStop}
+          model={settings.model}
+          isPro={isPro}
+          onModelChange={onModelChange}
+          effort={settings.reasoningEffort}
+          onEffortChange={onEffortChange}
+          spellcheck={settings.spellcheck}
+          sendKey={settings.sendKey}
+          accessToken={accessToken}
+          customProviders={settings.customProviders}
+          mode={settings.chatMode}
+          onModeChange={onModeChange}
+          agents={settings.agents}
+          activeAgentId={settings.activeAgentId}
+          onAgentChange={onAgentChange}
+          contextUsage={null}
+          conversations={conversations}
+          currentConversationId={null}
+        />
       </div>
     );
   }
@@ -89,26 +96,32 @@ export function ChatPanel({
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div
-          className={`max-w-[720px] mx-auto px-6 py-8 ${spacing} ${textSize}`}
-        >
-          {conversation.messages.map((m, i) => (
-            <div key={m.id} className="group min-w-0">
-              {m.role === "assistant" &&
-                isStreaming &&
-                i === conversation.messages.length - 1 && (
-                  <div className="flex items-center gap-1.5 text-xs text-foreground-muted mb-2">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    Working…
-                  </div>
-                )}
-              <MessageBubble
-                message={m}
-                showTimestamp={settings.showTimestamps}
-              />
-            </div>
-          ))}
-        </div>
+        {conversation.messages.length === 0 ? (
+          <div className="h-full flex items-center justify-center">
+            <p className="text-2xl text-foreground-secondary">What can I help with?</p>
+          </div>
+        ) : (
+          <div
+            className={`max-w-[720px] mx-auto px-6 py-8 ${spacing} ${textSize}`}
+          >
+            {conversation.messages.map((m, i) => (
+              <div key={m.id} className="group min-w-0">
+                {m.role === "assistant" &&
+                  isStreaming &&
+                  i === conversation.messages.length - 1 && (
+                    <div className="flex items-center gap-1.5 text-xs text-foreground-muted mb-2">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Working…
+                    </div>
+                  )}
+                <MessageBubble
+                  message={m}
+                  showTimestamp={settings.showTimestamps}
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       {toolApproval && (
         <ToolApprovalCard
@@ -125,7 +138,8 @@ export function ChatPanel({
         model={settings.model}
         isPro={isPro}
         onModelChange={onModelChange}
-        onSelectLocalModel={onSelectLocalModel}
+        effort={settings.reasoningEffort}
+        onEffortChange={onEffortChange}
         spellcheck={settings.spellcheck}
         sendKey={settings.sendKey}
         accessToken={accessToken}
@@ -135,6 +149,9 @@ export function ChatPanel({
         agents={settings.agents}
         activeAgentId={settings.activeAgentId}
         onAgentChange={onAgentChange}
+        contextUsage={conversation.lastUsage ?? null}
+        conversations={conversations}
+        currentConversationId={conversation.id}
       />
     </div>
   );

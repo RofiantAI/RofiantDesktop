@@ -129,8 +129,6 @@ export function SettingsPage({
           {section === "appearance" && <AppearanceSection settings={settings} onChange={onChange} />}
           {section === "profile" && (
             <ProfileSection
-              settings={settings}
-              onChange={onChange}
               userEmail={userEmail}
               userAvatarUrl={userAvatarUrl}
               userDisplayName={userDisplayName}

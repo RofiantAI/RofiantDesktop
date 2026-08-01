@@ -32,7 +32,10 @@ function MacTrafficLights() {
         aria-label="Close"
         className="w-3 h-3 rounded-full bg-[#ff5f57] flex items-center justify-center"
       >
-        <X className="w-2 h-2 text-black/60 opacity-0 group-hover/lights:opacity-100" strokeWidth={3} />
+        <X
+          className="w-2 h-2 text-black/60 opacity-0 group-hover/lights:opacity-100"
+          strokeWidth={3}
+        />
       </button>
       <button
         type="button"
@@ -40,7 +43,10 @@ function MacTrafficLights() {
         aria-label="Minimize"
         className="w-3 h-3 rounded-full bg-[#febc2e] flex items-center justify-center"
       >
-        <Minus className="w-2 h-2 text-black/60 opacity-0 group-hover/lights:opacity-100" strokeWidth={3} />
+        <Minus
+          className="w-2 h-2 text-black/60 opacity-0 group-hover/lights:opacity-100"
+          strokeWidth={3}
+        />
       </button>
       <button
         type="button"
@@ -48,7 +54,10 @@ function MacTrafficLights() {
         aria-label="Maximize"
         className="w-3 h-3 rounded-full bg-[#28c840] flex items-center justify-center"
       >
-        <Square className="w-1.5 h-1.5 text-black/60 opacity-0 group-hover/lights:opacity-100" strokeWidth={3} />
+        <Square
+          className="w-1.5 h-1.5 text-black/60 opacity-0 group-hover/lights:opacity-100"
+          strokeWidth={3}
+        />
       </button>
     </div>
   );

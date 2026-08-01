@@ -41,23 +41,17 @@ import {
 } from "lucide-react";
 import { generateTitle, sendChatMessage, stopChatMessage, respondToolApproval } from "./lib/groq";
 import type { ChatUsage, ToolApprovalRequest } from "./lib/groq";
-import { customModelId, customProviderIdFromModel } from "./lib/providers";
-import { upsertLocalModelProvider } from "./lib/ollama";
+// Project/worktree attach is disabled for now — see handleAttachProject
+// below, ProjectBar.tsx, and git_worktree_* in lib.rs.
+import { removeProjectWorktree } from "./lib/git";
+import { customProviderIdFromModel } from "./lib/providers";
 import { supabase } from "./lib/supabase";
-import {
-  clearRemoteConversations,
-  deleteRemoteConversation,
-  ensureRemoteConversation,
-  fetchRemoteConversations,
-  insertRemoteMessage,
-  insertUsageEvent,
-  setRemotePinned,
-  touchRemoteConversation,
-} from "./lib/sync";
+import { insertUsageEvent } from "./lib/sync";
 import { loadSettings, saveSettings, resolveTheme, playDoneSound, notifyResponse } from "./lib/settings";
 import { connectMcpServer } from "./lib/mcp";
 import { track, setTelemetryEnabled, setTelemetryUserId } from "./lib/telemetry";
 import { loadFileChanges, saveFileChanges } from "./lib/fileChanges";
+import { loadFolders, saveFolders } from "./lib/folders";
 import { checkForUpdate } from "./lib/updater";
 import type { AppSettings } from "./lib/settings";
 import { getUserAvatarUrl } from "./lib/user-avatar";
@@ -70,7 +64,7 @@ import type { Rule } from "./lib/rules";
 import { PLAN_MODE_INSTRUCTION } from "./lib/agents";
 import { isLinux, modShortcut } from "./lib/platform";
 import { parseAuthRedirect } from "./lib/auth-redirect";
-import type { Conversation, FileChange, Message } from "./types";
+import type { Conversation, FileChange, Folder, Message } from "./types";
 
 interface FileChangeEventPayload {
   conversation_id: string;
@@ -82,6 +76,8 @@ interface FileChangeEventPayload {
 function makeId() {
   return Math.random().toString(36).slice(2, 10);
 }
+
+const TERMINAL_MINIMIZED_KEY = "rofiant_file_changes_terminal_minimized";
 
 function makeConversation(title = "New chat"): Conversation {
   return {
@@ -96,7 +92,6 @@ function makeConversation(title = "New chat"): Conversation {
 function App() {
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [conversationsLoading, setConversationsLoading] = useState(false);
   const [openTabIds, setOpenTabIds] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -112,7 +107,11 @@ function App() {
   const [pendingMfaSession, setPendingMfaSession] = useState<Session | null>(null);
   const [showAuth, setShowAuth] = useState(false);
   const [fileChanges, setFileChanges] = useState<FileChange[]>(() => loadFileChanges());
+  const [folders, setFolders] = useState<Folder[]>(() => loadFolders());
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
+  const [terminalMinimized, setTerminalMinimized] = useState(
+    () => localStorage.getItem(TERMINAL_MINIMIZED_KEY) === "1",
+  );
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
   const [searchTrigger, setSearchTrigger] = useState(0);
@@ -284,35 +283,6 @@ function App() {
     };
   }, []);
 
-  const loadedUserIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    const userId = session?.user.id ?? null;
-    const syncKey = `${userId ?? "anon"}:${settings.websiteSync}`;
-    if (syncKey === loadedUserIdRef.current) return;
-    loadedUserIdRef.current = syncKey;
-
-    if (!userId || !settings.websiteSync) {
-      setConversations([]);
-      setOpenTabIds([]);
-      setActiveId(null);
-      return;
-    }
-
-    let cancelled = false;
-    setConversationsLoading(true);
-    fetchRemoteConversations(userId).then((remote) => {
-      if (cancelled) return;
-      setConversations(remote);
-      setOpenTabIds(remote.length > 0 ? [remote[0].id] : []);
-      setActiveId(remote.length > 0 ? remote[0].id : null);
-      setConversationsLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [session?.user.id, settings.websiteSync]);
-
   useEffect(() => {
     const unlisten = listen<FileChangeEventPayload>("file-change", (event) => {
       const p = event.payload;
@@ -354,6 +324,14 @@ function App() {
   }, [fileChanges]);
 
   useEffect(() => {
+    saveFolders(folders);
+  }, [folders]);
+
+  useEffect(() => {
+    localStorage.setItem(TERMINAL_MINIMIZED_KEY, terminalMinimized ? "1" : "0");
+  }, [terminalMinimized]);
+
+  useEffect(() => {
     document.documentElement.style.zoom = `${settings.uiScale}%`;
   }, [settings.uiScale]);
 
@@ -371,11 +349,6 @@ function App() {
     },
     [isPro],
   );
-
-  function handleSelectLocalModel(modelId: string) {
-    const { customProviders, providerId } = upsertLocalModelProvider(settings.customProviders, modelId);
-    updateSettings({ customProviders, model: customModelId(providerId) });
-  }
 
   useEffect(() => {
     setSettings((prev) => {
@@ -405,13 +378,55 @@ function App() {
     track("new_chat_created");
   }, [conversations.length]);
 
+  const handleNewInFolder = useCallback(
+    (folderId: string) => {
+      const c = { ...makeConversation(`New chat ${conversations.length + 1}`), folderId };
+      setConversations((prev) => [c, ...prev]);
+      setOpenTabIds((prev) => [...prev, c.id]);
+      setActiveId(c.id);
+      track("new_chat_created", { folder: true });
+    },
+    [conversations.length],
+  );
+
+  const handleCreateFolder = useCallback((name: string) => {
+    const folder: Folder = { id: crypto.randomUUID(), name, createdAt: Date.now() };
+    setFolders((prev) => [...prev, folder]);
+  }, []);
+
+  const handleRenameFolder = useCallback((id: string, name: string) => {
+    setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, name } : f)));
+  }, []);
+
+  const handleDeleteFolder = useCallback(
+    async (id: string) => {
+      const target = folders.find((f) => f.id === id);
+      const ok = await confirm({
+        title: target ? `Delete "${target.name}"?` : "Delete this folder?",
+        description: "Chats inside move back to the main list. This can't be undone.",
+        confirmLabel: "Delete",
+        danger: true,
+      });
+      if (!ok) return;
+      setFolders((prev) => prev.filter((f) => f.id !== id));
+      setConversations((prev) =>
+        prev.map((c) => (c.folderId === id ? { ...c, folderId: undefined } : c)),
+      );
+    },
+    [folders, confirm],
+  );
+
+  const handleMoveToFolder = useCallback((conversationId: string, folderId: string | null) => {
+    setConversations((prev) =>
+      prev.map((c) => (c.id === conversationId ? { ...c, folderId: folderId ?? undefined } : c)),
+    );
+  }, []);
+
   const handleRenameConversation = useCallback(
     (id: string, title: string) => {
       setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)));
-      const target = conversations.find((c) => c.id === id);
-      if (settings.websiteSync && target?.remoteId) void touchRemoteConversation(target.remoteId, title);
     },
-    [conversations, settings.websiteSync],
+    [],
   );
 
   const handleTogglePin = useCallback(
@@ -420,9 +435,8 @@ function App() {
       if (!target) return;
       const nextPinned = !target.pinned;
       setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, pinned: nextPinned } : c)));
-      if (settings.websiteSync && target.remoteId) void setRemotePinned(target.remoteId, nextPinned);
     },
-    [conversations, settings.websiteSync],
+    [conversations],
   );
 
   const handleDeleteConversation = useCallback(
@@ -443,10 +457,40 @@ function App() {
         }
         return next;
       });
-      if (settings.websiteSync && target?.remoteId) void deleteRemoteConversation(target.remoteId);
+      // Best-effort: a failed git cleanup should never block deleting the
+      // conversation itself (repo may have moved, worktree may already be gone).
+      if (target?.projectPath && target.worktreePath) {
+        void removeProjectWorktree(target.projectPath, target.worktreePath).catch(() => {});
+      }
     },
-    [conversations, activeId, settings.websiteSync, confirm],
+    [conversations, activeId, confirm],
   );
+
+  // Project/worktree attach — disabled for now (ChatPanel no longer renders
+  // ProjectBar), left here commented out to resume later.
+  // const handleAttachProject = useCallback(async (conversationId: string, repoPath: string) => {
+  //   const info = await attachProjectWorktree(repoPath, conversationId);
+  //   setConversations((prev) =>
+  //     prev.map((c) =>
+  //       c.id === conversationId
+  //         ? { ...c, projectPath: info.repoPath, worktreePath: info.worktreePath, branch: info.branch }
+  //         : c,
+  //     ),
+  //   );
+  // }, []);
+  //
+  // // Clears the conversation's pointer only — the worktree itself is left
+  // // alone (and only ever removed when the conversation is deleted, in
+  // // handleDeleteConversation) so detaching can't lose in-progress work.
+  // const handleDetachProject = useCallback((conversationId: string) => {
+  //   setConversations((prev) =>
+  //     prev.map((c) =>
+  //       c.id === conversationId
+  //         ? { ...c, projectPath: undefined, worktreePath: undefined, branch: undefined }
+  //         : c,
+  //     ),
+  //   );
+  // }, []);
 
   const handleCloseTab = useCallback(
     (id: string) => {
@@ -462,11 +506,10 @@ function App() {
   );
 
   const handleClearConversations = useCallback(() => {
-    if (session && settings.websiteSync) void clearRemoteConversations(session.user.id);
     setConversations([]);
     setOpenTabIds([]);
     setActiveId(null);
-  }, [session, settings.websiteSync]);
+  }, []);
 
   const handleCheckForUpdate = useCallback(async () => {
     try {
@@ -580,6 +623,13 @@ function App() {
     setFileChanges((prev) => prev.filter((f) => f.conversationId !== activeId));
   }, [activeId]);
 
+  const handleSaveFileChange = useCallback(async (change: FileChange, content: string) => {
+    await invoke("write_file_content", { path: change.path, content });
+    setFileChanges((prev) =>
+      prev.map((f) => (f.id === change.id ? { ...f, newContent: content } : f)),
+    );
+  }, []);
+
   const handleSend = useCallback(
     async (text: string, imageDataUrl?: string) => {
       const command = parseSlashCommand(text);
@@ -640,30 +690,12 @@ function App() {
         }),
       );
 
-      let remoteId = existing?.remoteId ?? null;
-      if (session && settings.websiteSync) {
-        if (!remoteId) {
-          remoteId = await ensureRemoteConversation(session.user.id, title);
-          if (remoteId) {
-            const resolvedRemoteId = remoteId;
-            setConversations((prev) =>
-              prev.map((c) => (c.id === targetId ? { ...c, remoteId: resolvedRemoteId } : c)),
-            );
-          }
-        } else if (isFirstMessage === false) {
-          void touchRemoteConversation(remoteId, title);
-        }
-        if (remoteId) void insertRemoteMessage(remoteId, "user", text, imageDataUrl);
-      }
-
-      if (isFirstMessage && session && settings.websiteSync) {
-        const resolvedRemoteId = remoteId;
+      if (isFirstMessage && session) {
         void generateTitle(text, session.access_token).then((aiTitle) => {
           if (!aiTitle) return;
           setConversations((prev) =>
             prev.map((c) => (c.id === targetId ? { ...c, title: aiTitle } : c)),
           );
-          if (resolvedRemoteId) void touchRemoteConversation(resolvedRemoteId, aiTitle);
         });
       }
 
@@ -723,10 +755,20 @@ function App() {
           outgoingModel,
           targetId,
           session.access_token,
-          (delta) => applyDelta(delta),
+          (delta, replace) => applyDelta(delta, replace),
           (usage: ChatUsage) => {
             void insertUsageEvent(session.user.id, usage.model, usage.inputTokens, usage.outputTokens);
             track("message_sent", { model: usage.model, chat_mode: settings.chatMode });
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === targetId
+                  ? {
+                      ...c,
+                      lastUsage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens },
+                    }
+                  : c,
+              ),
+            );
           },
           (requestId) => activeRequestIdsRef.current.set(targetId, requestId),
           activeProvider ? { baseUrl: activeProvider.baseUrl, apiKey: activeProvider.apiKey } : null,
@@ -738,12 +780,13 @@ function App() {
             }
             setToolApproval(req);
           },
+          settings.reasoningEffort,
+          existing?.worktreePath,
         );
         if (settings.responseSound) playDoneSound();
         if (settings.notifyOnResponse) {
           void notifyResponse(title, assistantText.slice(0, 120) || "Response ready");
         }
-        if (remoteId && settings.websiteSync) void insertRemoteMessage(remoteId, "assistant", assistantText);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         applyDelta(`${assistantText ? assistantText + "\n\n" : ""}⚠ ${message}`, true);
@@ -813,6 +856,9 @@ function App() {
       } else if (key === "y") {
         e.preventDefault();
         setHistoryOpen(true);
+      } else if (key === "l") {
+        e.preventDefault();
+        document.getElementById("composer-input")?.focus();
       } else if (key === "w") {
         e.preventDefault();
         if (activeId) handleCloseTab(activeId);
@@ -998,7 +1044,6 @@ function App() {
       >
         <Sidebar
           conversations={conversations}
-          loading={conversationsLoading}
           activeId={activeId}
           onSelect={openConversation}
           onNew={handleNew}
@@ -1007,6 +1052,12 @@ function App() {
           onRename={handleRenameConversation}
           onTogglePin={handleTogglePin}
           onDelete={handleDeleteConversation}
+          folders={folders}
+          onCreateFolder={handleCreateFolder}
+          onRenameFolder={handleRenameFolder}
+          onDeleteFolder={handleDeleteFolder}
+          onMoveToFolder={handleMoveToFolder}
+          onNewInFolder={handleNewInFolder}
           searchTrigger={searchTrigger}
           user={
             session
@@ -1043,12 +1094,13 @@ function App() {
         />
         <ChatPanel
           conversation={activeConversation}
+          conversations={conversations}
           onSend={handleSend}
           onStop={handleStop}
           settings={settings}
           isPro={isPro}
           onModelChange={(id) => updateSettings({ model: id })}
-          onSelectLocalModel={handleSelectLocalModel}
+          onEffortChange={(effort) => updateSettings({ reasoningEffort: effort })}
           onModeChange={(mode) => updateSettings({ chatMode: mode })}
           onAgentChange={(agentId) => updateSettings({ activeAgentId: agentId })}
           accessToken={session?.access_token ?? null}
@@ -1060,8 +1112,12 @@ function App() {
 
       <FileChangesPanel
         changes={fileChanges.filter((f) => f.conversationId === activeId)}
+        terminalMinimized={terminalMinimized}
+        onToggleTerminalMinimized={() => setTerminalMinimized((v) => !v)}
+        terminalCwd={activeConversation?.worktreePath}
         open={filesPanelOpen}
         onClose={() => setFilesPanelOpen(false)}
+        onSaveChange={handleSaveFileChange}
       />
     </div>
     );

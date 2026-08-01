@@ -1,6 +1,7 @@
 import type { CustomProvider } from "./providers";
 import type { Agent, ChatMode } from "./agents";
 import type { McpServerConfig } from "./mcp";
+import { DEFAULT_EFFORT, type EffortLevel } from "./models";
 
 export type Theme = "light" | "dark" | "system";
 export type FontSize = "sm" | "md" | "lg";
@@ -10,6 +11,7 @@ export type SendKey = "enter" | "mod-enter";
 
 export interface AppSettings {
   model: string;
+  reasoningEffort: EffortLevel;
   customProviders: CustomProvider[];
   customInstructions: string;
   contextLimit: number;
@@ -22,7 +24,6 @@ export interface AppSettings {
   notifyOnResponse: boolean;
   spellcheck: boolean;
   reduceMotion: boolean;
-  websiteSync: boolean;
   sendKey: SendKey;
   chatMode: ChatMode;
   agents: Agent[];
@@ -34,6 +35,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   model: "openai/gpt-oss-120b",
+  reasoningEffort: DEFAULT_EFFORT,
   customProviders: [],
   customInstructions: "",
   contextLimit: 20,
@@ -46,7 +48,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyOnResponse: false,
   spellcheck: false,
   reduceMotion: false,
-  websiteSync: true,
   sendKey: "enter",
   chatMode: "ask",
   agents: [],

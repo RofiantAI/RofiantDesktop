@@ -1,6 +1,6 @@
 [package]
 name = "Rofiant"
-version = "0.4.1"
+version = "0.4.2"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -38,6 +38,8 @@ arboard = "3"
 xcap = "0.4.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 sysinfo = "0.32"
+portable-pty = "0.9"
+tauri-plugin-dialog = "2"
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
 webkit2gtk = "=2.0.2"

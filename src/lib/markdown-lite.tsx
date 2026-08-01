@@ -1,5 +1,6 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FolderOpen, FileText, PenLine, TerminalSquare, Wrench, Ban, Copy, Check } from "lucide-react";
+import { tokenize, type TokenType } from "./syntax-highlight";
 
 const TOOL_ICONS: Record<string, typeof Wrench> = {
   list_directory: FolderOpen,
@@ -51,6 +52,33 @@ function renderInline(text: string): ReactNode[] {
   });
 }
 
+const TOKEN_CLASSES: Record<TokenType, string> = {
+  keyword: "text-syntax-keyword",
+  string: "text-syntax-string",
+  comment: "text-syntax-comment italic",
+  number: "text-syntax-number",
+  function: "text-syntax-function",
+  text: "",
+};
+
+function HighlightedCode({ lang, code }: { lang: string; code: string }) {
+  const tokens = useMemo(() => tokenize(code, lang), [code, lang]);
+  return (
+    <>
+      {tokens.map((token, i) => {
+        const className = TOKEN_CLASSES[token.type];
+        return className ? (
+          <span key={i} className={className}>
+            {token.text}
+          </span>
+        ) : (
+          <span key={i}>{token.text}</span>
+        );
+      })}
+    </>
+  );
+}
+
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -88,7 +116,9 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
         </button>
       </div>
       <pre className="px-3 py-2 overflow-x-auto text-[0.85em] font-mono text-foreground">
-        <code>{code}</code>
+        <code>
+          <HighlightedCode lang={lang} code={code} />
+        </code>
       </pre>
     </div>
   );

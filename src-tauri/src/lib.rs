@@ -13,6 +13,7 @@ use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{oneshot, watch};
 
 mod mcp;
+mod pty;
 
 const CANCELLED: &str = "__cancelled__";
 
@@ -56,6 +57,11 @@ pub struct ProviderConfig {
 struct ChatChunkPayload {
     request_id: String,
     delta: String,
+    // true tells the frontend to replace the message's accumulated content
+    // with `delta` instead of appending it — used for the rare post-hoc
+    // corrections below (stripping a leaked tool-call that already streamed
+    // as plain text). Everything else appends.
+    replace: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -240,7 +246,11 @@ fn home_dir() -> String {
     }
 }
 
-fn resolve_path(path: &str) -> PathBuf {
+/// Resolves a path the model or user gave us. `~` always expands to the real
+/// home directory; a bare relative path resolves against `base` instead —
+/// the active conversation's worktree when one is attached, or home
+/// otherwise (see `run_agent`).
+fn resolve_path(path: &str, base: &std::path::Path) -> PathBuf {
     let home = home_dir();
     let expanded = if let Some(rest) = path.strip_prefix("~/") {
         format!("{home}/{rest}")
@@ -253,7 +263,7 @@ fn resolve_path(path: &str) -> PathBuf {
     if p.is_absolute() {
         p
     } else {
-        PathBuf::from(&home).join(&expanded)
+        base.join(&expanded)
     }
 }
 
@@ -264,8 +274,8 @@ const IGNORED_DIR_NAMES: &[&str] = &[
     ".cache",
 ];
 
-fn tool_list_directory(path: &str, recursive: bool) -> String {
-    let dir = resolve_path(path);
+fn tool_list_directory(path: &str, recursive: bool, base: &std::path::Path) -> String {
+    let dir = resolve_path(path, base);
     if !recursive {
         return match std::fs::read_dir(&dir) {
             Ok(entries) => {
@@ -333,13 +343,148 @@ fn tool_list_directory(path: &str, recursive: bool) -> String {
     items.join("\n")
 }
 
+#[derive(Serialize)]
+struct DirEntryInfo {
+    name: String,
+    is_dir: bool,
+}
+
+/// Lists a directory for the `@`-mention file picker in the composer. Same
+/// read-only trust level as the agent's own `list_directory` tool — no
+/// approval prompt needed.
+#[tauri::command]
+fn list_dir_entries(path: Option<String>) -> Result<Vec<DirEntryInfo>, String> {
+    let dir = resolve_path(path.as_deref().unwrap_or("~"), &PathBuf::from(home_dir()));
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|e| format!("Error reading directory {}: {}", dir.display(), e))?;
+    let mut items: Vec<DirEntryInfo> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || IGNORED_DIR_NAMES.contains(&name.as_str()) {
+                return None;
+            }
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            Some(DirEntryInfo { name, is_dir })
+        })
+        .collect();
+    items.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    Ok(items)
+}
+
+/// Reads a file's contents for insertion as `@`-mention context. Reuses the
+/// same truncation as the agent's own `read_file` tool.
+#[tauri::command]
+fn read_file_for_mention(path: String) -> String {
+    tool_read_file(&path, &PathBuf::from(home_dir()))
+}
+
+/// Overwrites a file with content the user edited directly in the changed
+/// files panel (as opposed to an agent tool call).
+#[tauri::command]
+fn write_file_content(path: String, content: String) -> Result<(), String> {
+    tool_write_file(&path, &content, &PathBuf::from(home_dir())).map(|_| ())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeInfo {
+    worktree_path: String,
+    branch: String,
+    repo_path: String,
+}
+
+fn run_git(repo_path: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(args)
+        .output()
+        .map_err(|e| format!("Error running git: {e}"))
+}
+
+/// Attaches a conversation to a git repo by giving it its own worktree and
+/// branch, so parallel conversations editing the same repo never collide —
+/// each gets an isolated checkout instead of sharing one working directory.
+/// Idempotent: re-attaching an already-attached conversation (e.g. after an
+/// app restart) just returns the existing worktree's info.
+#[tauri::command]
+async fn git_worktree_attach(
+    app: AppHandle,
+    repo_path: String,
+    conversation_id: String,
+) -> Result<WorktreeInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        let check = run_git(&repo_path, &["rev-parse", "--is-inside-work-tree"])?;
+        if !check.status.success() || String::from_utf8_lossy(&check.stdout).trim() != "true" {
+            return Err(format!("`{repo_path}` is not a git repository."));
+        }
+
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Could not resolve app data directory: {e}"))?;
+        let worktree_path = data_dir.join("worktrees").join(&conversation_id);
+        let branch = format!("rofiant/{conversation_id}");
+
+        if !worktree_path.exists() {
+            if let Some(parent) = worktree_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Error creating worktree directory: {e}"))?;
+            }
+            let worktree_path_str = worktree_path
+                .to_str()
+                .ok_or("Worktree path is not valid UTF-8")?;
+            let add = run_git(
+                &repo_path,
+                &["worktree", "add", "-b", &branch, worktree_path_str, "HEAD"],
+            )?;
+            if !add.status.success() {
+                return Err(format!(
+                    "git worktree add failed: {}",
+                    String::from_utf8_lossy(&add.stderr).trim()
+                ));
+            }
+        }
+
+        Ok(WorktreeInfo {
+            worktree_path: worktree_path.display().to_string(),
+            branch,
+            repo_path,
+        })
+    })
+    .await
+    .map_err(|e| format!("Internal error attaching project: {e}"))?
+}
+
+/// Removes a conversation's dedicated worktree. Only called when the
+/// conversation itself is deleted — closing a tab must never destroy
+/// in-progress work.
+#[tauri::command]
+async fn git_worktree_remove(repo_path: String, worktree_path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let remove = run_git(&repo_path, &["worktree", "remove", &worktree_path, "--force"])?;
+        if !remove.status.success() {
+            return Err(format!(
+                "git worktree remove failed: {}",
+                String::from_utf8_lossy(&remove.stderr).trim()
+            ));
+        }
+        let _ = run_git(&repo_path, &["worktree", "prune"]);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Internal error removing project worktree: {e}"))?
+}
+
 fn tool_edit_file(
     path: &str,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
+    base: &std::path::Path,
 ) -> Result<(String, String, String), String> {
-    let file = resolve_path(path);
+    let file = resolve_path(path, base);
     let old_content = std::fs::read_to_string(&file)
         .map_err(|e| format!("Error reading file {}: {}", file.display(), e))?;
 
@@ -381,9 +526,9 @@ make it unique, or set replace_all to true.",
     Ok((message, old_content, new_content))
 }
 
-fn tool_read_file(path: &str) -> String {
+fn tool_read_file(path: &str, base: &std::path::Path) -> String {
     const MAX_LEN: usize = 8000;
-    let file = resolve_path(path);
+    let file = resolve_path(path, base);
     match std::fs::read_to_string(&file) {
         Ok(content) if content.len() > MAX_LEN => {
             format!(
@@ -397,8 +542,8 @@ fn tool_read_file(path: &str) -> String {
     }
 }
 
-fn tool_write_file(path: &str, content: &str) -> Result<String, String> {
-    let file = resolve_path(path);
+fn tool_write_file(path: &str, content: &str, base: &std::path::Path) -> Result<String, String> {
+    let file = resolve_path(path, base);
     if let Some(parent) = file.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return Err(format!("Error creating parent directories for {}: {}", file.display(), e));
@@ -525,7 +670,7 @@ fn shell_command(command: &str) -> std::process::Command {
     cmd
 }
 
-fn tool_run_command(command: &str, cwd: Option<&str>) -> String {
+fn tool_run_command(command: &str, cwd: Option<&str>, base: &std::path::Path) -> String {
     const MAX_LEN: usize = 6000;
 
     if let Some(reason) = is_blocked_command(command) {
@@ -535,7 +680,7 @@ If this is genuinely what the user wants, ask them to run it themselves outside 
         );
     }
 
-    let workdir = cwd.map(resolve_path).unwrap_or_else(|| PathBuf::from(home_dir()));
+    let workdir = cwd.map(|c| resolve_path(c, base)).unwrap_or_else(|| base.to_path_buf());
     let output = shell_command(command).current_dir(&workdir).output();
 
     match output {
@@ -631,7 +776,7 @@ fn tool_save_screenshot(app: &AppHandle, path: Option<&str>) -> Result<String, S
         }
     };
 
-    let file = resolve_path(path);
+    let file = resolve_path(path, &PathBuf::from(home_dir()));
     if let Some(parent) = file.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return Err(format!("Error creating parent directories for {}: {}", file.display(), e));
@@ -916,17 +1061,31 @@ fn tools_schema() -> Value {
     ])
 }
 
-fn system_prompt() -> String {
+fn system_prompt(base: &std::path::Path) -> String {
     let home = home_dir();
+    let location_paragraph = if base == std::path::Path::new(&home) {
+        format!(
+            "The user's home directory is exactly \
+`{home}`. Use paths relative to it (e.g. 'Desktop/notes.txt') or prefixed with '~/' — never guess \
+a literal username like /home/user/... or /Users/username/..., since it will resolve to the wrong \
+place or fail with a permission error."
+        )
+    } else {
+        format!(
+            "This conversation is attached to a project at `{}` — a dedicated git worktree/branch \
+created just for this task, isolated from the user's other conversations and their main checkout of \
+the repo. Relative paths (and run_command's default working directory) resolve inside it, so prefer \
+plain relative paths (e.g. 'src/index.ts') for anything in the project. Use '~/' only if you \
+deliberately need the user's actual home directory instead.",
+            base.display()
+        )
+    };
     format!(
         "You are Rofiant, an AI assistant with real, direct access to the user's computer through \
 tools: list_directory, read_file, write_file, edit_file, run_command, get_clipboard, set_clipboard, \
 take_screenshot, save_screenshot, list_processes, kill_process, open_app, and send_notification. \
 These are not simulations — they execute for real on the user's machine. \
-The user's home directory is exactly \
-`{home}`. Use paths relative to it (e.g. 'Desktop/notes.txt') or prefixed with '~/' — never guess \
-a literal username like /home/user/... or /Users/username/..., since it will resolve to the wrong \
-place or fail with a permission error. Prefer open_app over run_command for launching GUI \
+{location_paragraph} Prefer open_app over run_command for launching GUI \
 applications, since run_command waits for the process to exit and will hang. Use take_screenshot \
 when you need to see what's currently on screen; use save_screenshot instead when the user wants \
 the screenshot saved as a file — it captures and writes the PNG directly, so never try to save a \
@@ -964,6 +1123,8 @@ async fn send_chat(
     model: String,
     access_token: String,
     provider: Option<ProviderConfig>,
+    effort: Option<String>,
+    cwd: Option<String>,
 ) -> Result<(), String> {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     cancellations.0.lock().unwrap().insert(request_id.clone(), cancel_tx);
@@ -976,6 +1137,8 @@ async fn send_chat(
         messages,
         &access_token,
         provider,
+        effort,
+        cwd,
         cancel_rx,
     )
     .await;
@@ -1259,11 +1422,20 @@ fn strip_leaked_tool_schema_syntax(text: &str) -> String {
 }
 
 fn emit_text(app: &AppHandle, request_id: &str, text: impl Into<String>) {
+    emit_delta(app, request_id, text, false);
+}
+
+fn emit_replace(app: &AppHandle, request_id: &str, text: impl Into<String>) {
+    emit_delta(app, request_id, text, true);
+}
+
+fn emit_delta(app: &AppHandle, request_id: &str, text: impl Into<String>, replace: bool) {
     let _ = app.emit(
         "chat-chunk",
         ChatChunkPayload {
             request_id: request_id.to_string(),
             delta: text.into(),
+            replace,
         },
     );
 }
@@ -1276,9 +1448,15 @@ async fn run_agent(
     messages: Vec<ChatMessage>,
     access_token: &str,
     provider: Option<ProviderConfig>,
+    effort: Option<String>,
+    cwd: Option<String>,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let client = http_client();
+    // The active conversation's worktree when one is attached, or home
+    // otherwise — every relative path the model uses, and run_command's
+    // default working directory, resolve against this.
+    let base: PathBuf = cwd.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(home_dir()));
+    let client = streaming_http_client();
     let (url, auth_token): (String, &str) = match &provider {
         Some(p) => (
             format!("{}/chat/completions", p.base_url.trim_end_matches('/')),
@@ -1302,7 +1480,7 @@ async fn run_agent(
     // frontend sends (custom instructions, active agent prompt, rules,
     // plan-mode instruction) into the one system message instead of
     // sending them as separate entries.
-    let mut system_content = system_prompt();
+    let mut system_content = system_prompt(&base);
     let mut rest: Vec<ChatMessage> = Vec::with_capacity(messages.len());
     for m in messages {
         if m.role == "system" && m.image_data_url.is_none() {
@@ -1317,6 +1495,11 @@ async fn run_agent(
     // VISION_MODEL_ID in src/lib/models.ts) — sending it to any other model
     // gets the whole request rejected with "content must be a string".
     let model_supports_vision = model == "qwen/qwen3.6-27b";
+
+    // Groq only honors reasoning_effort for the gpt-oss family (must match
+    // supportsEffort in src/lib/models.ts) — sending it to any other model
+    // is harmless there, but skip it anyway to keep the request minimal.
+    let model_supports_effort = model.starts_with("openai/gpt-oss");
 
     let mut convo: Vec<Value> = vec![json!({ "role": "system", "content": system_content })];
     convo.extend(rest.into_iter().map(|m| match m.image_data_url {
@@ -1353,7 +1536,14 @@ async fn run_agent(
         let mut body = json!({
             "model": outbound_model,
             "messages": convo,
+            "stream": true,
+            "stream_options": { "include_usage": true },
         });
+        if model_supports_effort {
+            if let Some(level) = &effort {
+                body["reasoning_effort"] = json!(level);
+            }
+        }
         if include_tools {
             let mut tools = tools_schema();
             let mcp_tools = mcp::tool_schemas(app.state::<mcp::McpState>().inner()).await;
@@ -1386,30 +1576,115 @@ async fn run_agent(
             return Err(format!("Provider API error ({status}): {text}"));
         }
 
-        let data: Value = response
-            .json()
-            .await
-            .map_err(|e| format!("failed to parse response: {e}"))?;
+        // Read the response as Server-Sent Events, forwarding text deltas to
+        // the UI as they arrive instead of buffering the whole reply. A
+        // partially-formed tool call isn't actionable, so tool-call deltas
+        // are accumulated silently and only acted on once the stream ends.
+        #[derive(Default)]
+        struct ToolCallAcc {
+            id: String,
+            name: String,
+            arguments: String,
+        }
 
-        total_input_tokens += data["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
-        total_output_tokens += data["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+        use futures_util::StreamExt;
 
-        let mut message = data["choices"][0]["message"].clone();
-        let mut tool_calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+        let mut byte_buf: Vec<u8> = Vec::new();
+        let mut content_acc = String::new();
+        let mut tool_calls_acc: Vec<Option<ToolCallAcc>> = Vec::new();
+        let mut step_input_tokens: u64 = 0;
+        let mut step_output_tokens: u64 = 0;
 
+        let mut stream = response.bytes_stream();
+        'read: loop {
+            let next = tokio::select! {
+                biased;
+                _ = cancel_rx.changed() => return Err(CANCELLED.to_string()),
+                chunk = stream.next() => chunk,
+            };
+            let Some(chunk) = next else { break };
+            let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
+            byte_buf.extend_from_slice(&chunk);
+
+            while let Some(pos) = byte_buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = byte_buf.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line);
+                let line = line.trim();
+                let Some(data) = line.strip_prefix("data:") else { continue };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    break 'read;
+                }
+                let Ok(chunk_json) = serde_json::from_str::<Value>(data) else { continue };
+
+                if let Some(usage) = chunk_json.get("usage").filter(|u| !u.is_null()) {
+                    step_input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(step_input_tokens);
+                    step_output_tokens = usage["completion_tokens"].as_u64().unwrap_or(step_output_tokens);
+                }
+
+                let delta = &chunk_json["choices"][0]["delta"];
+                if let Some(content) = delta["content"].as_str() {
+                    if !content.is_empty() {
+                        content_acc.push_str(content);
+                        emit_text(app, request_id, content);
+                    }
+                }
+                if let Some(tc_deltas) = delta["tool_calls"].as_array() {
+                    for tc in tc_deltas {
+                        let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                        while tool_calls_acc.len() <= idx {
+                            tool_calls_acc.push(None);
+                        }
+                        let entry = tool_calls_acc[idx].get_or_insert_with(ToolCallAcc::default);
+                        if let Some(id) = tc["id"].as_str() {
+                            entry.id = id.to_string();
+                        }
+                        if let Some(name) = tc["function"]["name"].as_str() {
+                            entry.name = name.to_string();
+                        }
+                        if let Some(args) = tc["function"]["arguments"].as_str() {
+                            entry.arguments.push_str(args);
+                        }
+                    }
+                }
+            }
+        }
+        total_input_tokens += step_input_tokens;
+        total_output_tokens += step_output_tokens;
+
+        let tool_calls_from_stream: Vec<Value> = tool_calls_acc
+            .into_iter()
+            .flatten()
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "type": "function",
+                    "function": { "name": t.name, "arguments": t.arguments },
+                })
+            })
+            .collect();
+
+        let mut tool_calls = tool_calls_from_stream.clone();
         let mut leaked_as_tool_calls = false;
         if tool_calls.is_empty() {
-            if let Some(parsed) = parse_leaked_tool_calls(message["content"].as_str().unwrap_or("")) {
+            if let Some(parsed) = parse_leaked_tool_calls(&content_acc) {
                 tool_calls = parsed;
                 leaked_as_tool_calls = true;
+                // This was already streamed live as plain text before we knew
+                // it was actually a leaked tool call — erase it now that it's
+                // being run as one instead, matching what used to happen when
+                // the whole reply was buffered first (it was never shown).
+                emit_replace(app, request_id, "");
             }
         }
 
         if tool_calls.is_empty() {
-            let text = strip_leaked_tool_syntax(message["content"].as_str().unwrap_or(""));
+            let text = strip_leaked_tool_syntax(&content_acc);
             let text = strip_leaked_pseudo_tool_syntax(&text);
             let text = strip_leaked_tool_schema_syntax(&text);
-            emit_text(app, request_id, text);
+            if text != content_acc {
+                emit_replace(app, request_id, text);
+            }
             let _ = app.emit(
                 "chat-usage",
                 ChatUsagePayload {
@@ -1422,16 +1697,17 @@ async fn run_agent(
             return Ok(());
         }
 
-        // Assistant responses that only make tool calls come back with
-        // content: null. That's valid as a response, but replaying it back
-        // as history on the next request gets rejected by some providers
-        // ("content must be a string"), so normalize it before pushing.
-        // Leaked-JSON tool calls need the same treatment: drop the raw JSON
-        // text from history since the real tool_calls array replaces it.
-        if message["content"].is_null() || leaked_as_tool_calls {
-            message["content"] = json!("");
-        }
+        // Assistant responses that only make tool calls come back with no
+        // content. That's valid, but replaying leaked-JSON text back as
+        // history on the next request would just confuse the model, since
+        // the real tool_calls array already replaces it.
+        let mut message = json!({
+            "role": "assistant",
+            "content": content_acc,
+            "tool_calls": tool_calls_from_stream,
+        });
         if leaked_as_tool_calls {
+            message["content"] = json!("");
             message["tool_calls"] = json!(tool_calls);
         }
         convo.push(message);
@@ -1480,13 +1756,13 @@ async fn run_agent(
                 mcp::call_tool(app.state::<mcp::McpState>().inner(), name, args.clone()).await
             } else {
                 match name {
-                "list_directory" => tool_list_directory(path, args["recursive"].as_bool().unwrap_or(false)),
-                "read_file" => tool_read_file(path),
+                "list_directory" => tool_list_directory(path, args["recursive"].as_bool().unwrap_or(false), &base),
+                "read_file" => tool_read_file(path, &base),
                 "write_file" => {
                     let content = args["content"].as_str().unwrap_or("");
-                    let resolved = resolve_path(path);
+                    let resolved = resolve_path(path, &base);
                     let old_content = std::fs::read_to_string(&resolved).ok();
-                    match tool_write_file(path, content) {
+                    match tool_write_file(path, content, &base) {
                         Ok(message) => {
                             let _ = app.emit(
                                 "file-change",
@@ -1506,8 +1782,8 @@ async fn run_agent(
                     let old_string = args["old_string"].as_str().unwrap_or("");
                     let new_string = args["new_string"].as_str().unwrap_or("");
                     let replace_all = args["replace_all"].as_bool().unwrap_or(false);
-                    let resolved = resolve_path(path);
-                    match tool_edit_file(path, old_string, new_string, replace_all) {
+                    let resolved = resolve_path(path, &base);
+                    match tool_edit_file(path, old_string, new_string, replace_all, &base) {
                         Ok((message, old_content, new_content)) => {
                             let _ = app.emit(
                                 "file-change",
@@ -1529,9 +1805,12 @@ async fn run_agent(
                     // worker thread and make Stop/cancel unresponsive.
                     let cwd = args["cwd"].as_str().map(|s| s.to_string());
                     let command_owned = command.to_string();
-                    tokio::task::spawn_blocking(move || tool_run_command(&command_owned, cwd.as_deref()))
-                        .await
-                        .unwrap_or_else(|e| format!("Internal error running command: {e}"))
+                    let base_owned = base.clone();
+                    tokio::task::spawn_blocking(move || {
+                        tool_run_command(&command_owned, cwd.as_deref(), &base_owned)
+                    })
+                    .await
+                    .unwrap_or_else(|e| format!("Internal error running command: {e}"))
                 }
                 "get_clipboard" => tool_get_clipboard(),
                 "set_clipboard" => {
@@ -1947,6 +2226,33 @@ async fn mcp_disconnect(state: State<'_, mcp::McpState>, id: String) -> Result<(
     Ok(())
 }
 
+#[tauri::command]
+fn pty_spawn(
+    app: AppHandle,
+    state: State<pty::PtyState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    pty::spawn(app, state.inner(), id, cols, rows, cwd)
+}
+
+#[tauri::command]
+fn pty_write(state: State<pty::PtyState>, id: String, data: String) -> Result<(), String> {
+    pty::write(state.inner(), &id, &data)
+}
+
+#[tauri::command]
+fn pty_resize(state: State<pty::PtyState>, id: String, cols: u16, rows: u16) -> Result<(), String> {
+    pty::resize(state.inner(), &id, cols, rows)
+}
+
+#[tauri::command]
+fn pty_kill(state: State<pty::PtyState>, id: String) -> Result<(), String> {
+    pty::kill(state.inner(), &id)
+}
+
 // Requests a Mica backdrop on Windows 11 (no-op with an ignored error on
 // Windows 10, where the DWM attribute doesn't exist). Round corners are
 // already DWM's default for a borderless window, so nothing to pin there.
@@ -1996,10 +2302,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(ChatCancellations::default())
         .manage(ToolApprovals::default())
         .manage(mcp::McpState::default())
         .manage(MinimizeToTray::default())
+        .manage(pty::PtyState::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
@@ -2113,7 +2421,16 @@ pub fn run() {
             mcp_connect,
             mcp_disconnect,
             set_minimize_to_tray,
-            get_kiro_auto_model
+            get_kiro_auto_model,
+            list_dir_entries,
+            read_file_for_mention,
+            write_file_content,
+            git_worktree_attach,
+            git_worktree_remove,
+            pty_spawn,
+            pty_write,
+            pty_resize,
+            pty_kill
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -2149,32 +2466,50 @@ mod fs_tool_tests {
         dir
     }
 
+    fn home_base() -> PathBuf {
+        PathBuf::from(home_dir())
+    }
+
     #[test]
     fn resolve_path_passes_through_absolute_paths() {
-        assert_eq!(resolve_path("/etc/hosts"), PathBuf::from("/etc/hosts"));
+        assert_eq!(resolve_path("/etc/hosts", &home_base()), PathBuf::from("/etc/hosts"));
     }
 
     #[test]
     fn resolve_path_expands_tilde_prefix() {
-        assert_eq!(resolve_path("~/foo/bar"), PathBuf::from(home_dir()).join("foo/bar"));
+        assert_eq!(resolve_path("~/foo/bar", &home_base()), PathBuf::from(home_dir()).join("foo/bar"));
     }
 
     #[test]
     fn resolve_path_expands_bare_tilde() {
-        assert_eq!(resolve_path("~"), PathBuf::from(home_dir()));
+        assert_eq!(resolve_path("~", &home_base()), PathBuf::from(home_dir()));
     }
 
     #[test]
     fn resolve_path_joins_relative_paths_to_home() {
-        assert_eq!(resolve_path("foo/bar"), PathBuf::from(home_dir()).join("foo/bar"));
+        assert_eq!(resolve_path("foo/bar", &home_base()), PathBuf::from(home_dir()).join("foo/bar"));
+    }
+
+    #[test]
+    fn resolve_path_joins_relative_paths_to_explicit_base() {
+        let base = PathBuf::from("/tmp/some-worktree");
+        assert_eq!(resolve_path("src/index.ts", &base), base.join("src/index.ts"));
+    }
+
+    #[test]
+    fn resolve_path_tilde_ignores_explicit_base() {
+        // `~` should always mean the real home directory, even when a
+        // project base is active — see system_prompt's guidance.
+        let base = PathBuf::from("/tmp/some-worktree");
+        assert_eq!(resolve_path("~/foo", &base), PathBuf::from(home_dir()).join("foo"));
     }
 
     #[test]
     fn write_then_read_file_round_trips() {
         let dir = temp_dir("write-read");
         let file = dir.join("hello.txt").display().to_string();
-        assert!(tool_write_file(&file, "hello world").is_ok());
-        assert_eq!(tool_read_file(&file), "hello world");
+        assert!(tool_write_file(&file, "hello world", &home_base()).is_ok());
+        assert_eq!(tool_read_file(&file, &home_base()), "hello world");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2182,7 +2517,7 @@ mod fs_tool_tests {
     fn write_file_creates_missing_parent_directories() {
         let dir = temp_dir("nested");
         let file = dir.join("a/b/c.txt").display().to_string();
-        assert!(tool_write_file(&file, "nested").is_ok());
+        assert!(tool_write_file(&file, "nested", &home_base()).is_ok());
         assert_eq!(std::fs::read_to_string(dir.join("a/b/c.txt")).unwrap(), "nested");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2191,7 +2526,7 @@ mod fs_tool_tests {
     fn read_file_reports_missing_file() {
         let dir = temp_dir("missing");
         let file = dir.join("nope.txt").display().to_string();
-        assert!(tool_read_file(&file).starts_with("Error reading file"));
+        assert!(tool_read_file(&file, &home_base()).starts_with("Error reading file"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2200,14 +2535,20 @@ mod fs_tool_tests {
         let dir = temp_dir("list");
         std::fs::write(dir.join("b.txt"), "").unwrap();
         std::fs::create_dir(dir.join("a_dir")).unwrap();
-        assert_eq!(tool_list_directory(&dir.display().to_string(), false), "a_dir/\nb.txt");
+        assert_eq!(
+            tool_list_directory(&dir.display().to_string(), false, &home_base()),
+            "a_dir/\nb.txt"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn list_directory_reports_empty() {
         let dir = temp_dir("empty");
-        assert_eq!(tool_list_directory(&dir.display().to_string(), false), "(empty directory)");
+        assert_eq!(
+            tool_list_directory(&dir.display().to_string(), false, &home_base()),
+            "(empty directory)"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2217,7 +2558,7 @@ mod fs_tool_tests {
         let file = dir.join("f.txt");
         std::fs::write(&file, "foo bar baz").unwrap();
         let (msg, old, new) =
-            tool_edit_file(&file.display().to_string(), "bar", "qux", false).unwrap();
+            tool_edit_file(&file.display().to_string(), "bar", "qux", false, &home_base()).unwrap();
         assert_eq!(old, "foo bar baz");
         assert_eq!(new, "foo qux baz");
         assert!(msg.contains("Replaced 1 occurrence"));
@@ -2229,7 +2570,7 @@ mod fs_tool_tests {
         let dir = temp_dir("edit-ambiguous");
         let file = dir.join("f.txt");
         std::fs::write(&file, "foo foo foo").unwrap();
-        let result = tool_edit_file(&file.display().to_string(), "foo", "bar", false);
+        let result = tool_edit_file(&file.display().to_string(), "foo", "bar", false, &home_base());
         assert!(result.unwrap_err().contains("appears 3 times"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2240,7 +2581,7 @@ mod fs_tool_tests {
         let file = dir.join("f.txt");
         std::fs::write(&file, "foo foo foo").unwrap();
         let (msg, _old, new) =
-            tool_edit_file(&file.display().to_string(), "foo", "bar", true).unwrap();
+            tool_edit_file(&file.display().to_string(), "foo", "bar", true, &home_base()).unwrap();
         assert_eq!(new, "bar bar bar");
         assert!(msg.contains("Replaced 3 occurrences"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2251,7 +2592,7 @@ mod fs_tool_tests {
         let dir = temp_dir("edit-empty-old-string");
         let file = dir.join("f.txt");
         std::fs::write(&file, "foo").unwrap();
-        assert!(tool_edit_file(&file.display().to_string(), "", "bar", false).is_err());
+        assert!(tool_edit_file(&file.display().to_string(), "", "bar", false, &home_base()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2260,7 +2601,7 @@ mod fs_tool_tests {
         let dir = temp_dir("edit-notfound");
         let file = dir.join("f.txt");
         std::fs::write(&file, "foo").unwrap();
-        assert!(tool_edit_file(&file.display().to_string(), "missing", "bar", false).is_err());
+        assert!(tool_edit_file(&file.display().to_string(), "missing", "bar", false, &home_base()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

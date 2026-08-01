@@ -1,4 +1,4 @@
-import { X, Plus, PanelRight, MessageSquare, RotateCcw } from "lucide-react";
+import { X, Plus, PanelRight, MessageSquare, RotateCcw, Loader2 } from "lucide-react";
 import type { Conversation } from "../types";
 
 export function TabBar({
@@ -37,28 +37,29 @@ export function TabBar({
           <Plus className="w-4 h-4" />
         </button>
       )}
-      <div className="flex items-center h-full overflow-x-auto min-w-0 px-1 gap-0.5">
+      <div className="flex items-center h-full overflow-x-auto min-w-0 px-1">
         {tabs.map((t) => {
           const active = t.id === activeId;
           return (
             <div
               key={t.id}
-              className={`group relative flex items-center gap-1.5 h-7 pl-2.5 pr-1.5 text-[13px] rounded-md max-w-[200px] shrink-0 transition-colors my-auto ${
+              className={`group relative flex items-center gap-1.5 h-full px-3 text-[13px] max-w-[200px] shrink-0 transition-colors border-b-2 ${
                 active
-                  ? "bg-background-tertiary text-foreground"
-                  : "text-foreground-secondary hover:bg-background-tertiary/50 hover:text-foreground"
+                  ? "text-foreground border-foreground/70"
+                  : "text-foreground-muted border-transparent hover:text-foreground-secondary"
               }`}
             >
               <button
                 type="button"
                 onClick={() => onSelect(t.id)}
-                className="flex items-center gap-1.5 min-w-0"
+                className="flex flex-1 items-center gap-1.5 min-w-0"
               >
-                <MessageSquare className="w-3 h-3 shrink-0 text-foreground-muted" />
-                <span className="truncate">{t.title}</span>
-                {t.status === "running" && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-accent-primary animate-pulse shrink-0" />
+                {t.status === "running" ? (
+                  <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
+                ) : (
+                  <MessageSquare className="w-3 h-3 shrink-0" />
                 )}
+                <span className="truncate">{t.title}</span>
               </button>
               <button
                 type="button"
@@ -79,7 +80,7 @@ export function TabBar({
           onClick={onNew}
           title="New chat tab"
           aria-label="New chat tab"
-          className="flex items-center justify-center w-7 h-7 rounded-md shrink-0 text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
+          className="flex items-center justify-center w-7 h-7 rounded-md shrink-0 ml-1 text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
         </button>

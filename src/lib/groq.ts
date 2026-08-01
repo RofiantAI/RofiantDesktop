@@ -10,6 +10,7 @@ export interface ChatMessage {
 interface ChatChunkPayload {
   request_id: string;
   delta: string;
+  replace: boolean;
 }
 interface ChatDonePayload {
   request_id: string;
@@ -83,11 +84,13 @@ export async function sendChatMessage(
   model: string,
   conversationId: string,
   accessToken: string,
-  onDelta: (delta: string) => void,
+  onDelta: (delta: string, replace?: boolean) => void,
   onUsage?: (usage: ChatUsage) => void,
   onRequestId?: (requestId: string) => void,
   provider?: ProviderConfig | null,
   onToolApproval?: (req: ToolApprovalRequest) => void,
+  effort?: string | null,
+  cwd?: string | null,
 ): Promise<void> {
   const requestId = crypto.randomUUID();
   onRequestId?.(requestId);
@@ -98,7 +101,7 @@ export async function sendChatMessage(
 
     Promise.all([
       listen<ChatChunkPayload>("chat-chunk", (event) => {
-        if (event.payload.request_id === requestId) onDelta(event.payload.delta);
+        if (event.payload.request_id === requestId) onDelta(event.payload.delta, event.payload.replace);
       }),
       listen<ChatDonePayload>("chat-done", (event) => {
         if (event.payload.request_id === requestId) {
@@ -139,6 +142,8 @@ export async function sendChatMessage(
         model,
         accessToken,
         provider: provider ?? null,
+        effort: effort ?? null,
+        cwd: cwd ?? null,
       }).catch((err) => {
         cleanup();
         reject(err instanceof Error ? err : new Error(String(err)));

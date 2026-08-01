@@ -76,6 +76,36 @@ export function isVisionModel(id: string): boolean {
   return id === VISION_MODEL_ID;
 }
 
+export const EFFORT_LEVELS = ["low", "medium", "high"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+export const DEFAULT_EFFORT: EffortLevel = "medium";
+
+// Groq only honors reasoning_effort for the gpt-oss family today — sent to
+// any other model it's silently ignored, but keep the picker itself scoped
+// to models that actually respond to it.
+export function supportsEffort(id: string): boolean {
+  return id.startsWith("openai/gpt-oss");
+}
+
+// Max context window (tokens) per model, for the context-usage indicator in
+// the composer. Verified against Groq's docs for the models actually hosted
+// there (openai/gpt-oss-20b, openai/gpt-oss-120b, llama-3.1-8b-instant all
+// list 131,072). The rest (DMC/Logfare-hosted, custom providers) aren't on a
+// public spec sheet, so they fall back to that same figure as a best-effort
+// default — update here if the real number for one of those turns out to
+// differ.
+const DEFAULT_CONTEXT_WINDOW = 131_072;
+
+const CONTEXT_WINDOW_SIZES: Record<string, number> = {
+  "openai/gpt-oss-20b": 131_072,
+  "openai/gpt-oss-120b": 131_072,
+  "llama-3.1-8b-instant": 131_072,
+};
+
+export function contextWindowForModel(model: string): number {
+  return CONTEXT_WINDOW_SIZES[model] ?? DEFAULT_CONTEXT_WINDOW;
+}
+
 // Models proxied through Logfare (see supabase/functions/logfare-proxy and
 // model_uses_logfare in src-tauri/src/lib.rs — kept in sync manually).
 // Logfare is a free community-run inference API with no uptime guarantee,

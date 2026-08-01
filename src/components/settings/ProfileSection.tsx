@@ -1,13 +1,10 @@
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import type { AppSettings } from "../../lib/settings";
 import { Avatar } from "../Sidebar";
-import { Row, SectionLabel, Toggle } from "./shared";
+import { SectionLabel } from "./shared";
 
 export function ProfileSection({
-  settings,
-  onChange,
   userEmail,
   userAvatarUrl,
   userDisplayName,
@@ -16,8 +13,6 @@ export function ProfileSection({
   onSignIn,
   onSignOut,
 }: {
-  settings: AppSettings;
-  onChange: (patch: Partial<AppSettings>) => void;
   userEmail: string | null;
   userAvatarUrl: string | null;
   userDisplayName: string | null;
@@ -114,11 +109,6 @@ export function ProfileSection({
           </div>
         </div>
       )}
-      <div className="mt-4">
-        <Row label="Website sync" description="Keep conversations in sync with rofiant.ca">
-          <Toggle checked={settings.websiteSync} onChange={(v) => onChange({ websiteSync: v })} />
-        </Row>
-      </div>
       {!userEmail && (
         <div className="flex items-center justify-between rounded-lg border border-border px-3 py-3">
           <div className="text-[13px] text-foreground-secondary">You're not signed in</div>
