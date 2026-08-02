@@ -1,4 +1,5 @@
-import { X, Plus, PanelRight, MessageSquare, RotateCcw, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { X, Plus, PanelRight, MessageSquare, RotateCcw, Loader2, Pencil } from "lucide-react";
 import type { Conversation } from "../types";
 
 export function TabBar({
@@ -8,6 +9,7 @@ export function TabBar({
   onSelect,
   onClose,
   onNew,
+  onRename,
   filesPanelOpen,
   onToggleFilesPanel,
   changedFilesCount,
@@ -19,11 +21,26 @@ export function TabBar({
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
+  onRename: (id: string, title: string) => void;
   filesPanelOpen: boolean;
   onToggleFilesPanel: () => void;
   changedFilesCount: number;
   onOpenHistory: () => void;
 }) {
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  function startRename(t: Conversation) {
+    setRenamingId(t.id);
+    setRenameValue(t.title);
+  }
+
+  function commitRename(t: Conversation) {
+    const value = renameValue.trim();
+    setRenamingId(null);
+    if (value && value !== t.title) onRename(t.id, value);
+  }
+
   return (
     <div className="flex items-center h-11 shrink-0 border-b border-border bg-background pr-2">
       {!sidebarOpen && tabs.length > 0 && (
@@ -40,6 +57,7 @@ export function TabBar({
       <div className="flex items-center h-full overflow-x-auto min-w-0 px-1">
         {tabs.map((t) => {
           const active = t.id === activeId;
+          const renaming = renamingId === t.id;
           return (
             <div
               key={t.id}
@@ -51,7 +69,8 @@ export function TabBar({
             >
               <button
                 type="button"
-                onClick={() => onSelect(t.id)}
+                onClick={() => !renaming && onSelect(t.id)}
+                onDoubleClick={() => startRename(t)}
                 className="flex flex-1 items-center gap-1.5 min-w-0"
               >
                 {t.status === "running" ? (
@@ -59,8 +78,42 @@ export function TabBar({
                 ) : (
                   <MessageSquare className="w-3 h-3 shrink-0" />
                 )}
-                <span className="truncate">{t.title}</span>
+                {renaming ? (
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => commitRename(t)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commitRename(t);
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        setRenamingId(null);
+                      }
+                    }}
+                    className="w-full bg-transparent text-foreground outline-none border-b border-foreground-muted/40"
+                  />
+                ) : (
+                  <span className="truncate">{t.title}</span>
+                )}
               </button>
+              {!renaming && (
+                <button
+                  type="button"
+                  aria-label={`Rename ${t.title}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startRename(t);
+                  }}
+                  className="shrink-0 opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-background-tertiary transition-opacity"
+                >
+                  <Pencil className="w-3 h-3" />
+                </button>
+              )}
               <button
                 type="button"
                 aria-label={`Close ${t.title}`}

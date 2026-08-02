@@ -115,6 +115,7 @@ struct FileChangePayload {
 const GROQ_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/groq-proxy";
 const LOGFARE_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/logfare-proxy";
 const DMC_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/dmc-proxy";
+const BRAVE_SEARCH_PROXY_URL: &str = "https://nxwzaztltnqdslnvehva.supabase.co/functions/v1/brave-search-proxy";
 
 // reqwest::Client::new() has no timeout by default, so a dead network (e.g.
 // offline, DNS black hole) hangs the request forever with no way for the
@@ -838,6 +839,63 @@ fn tool_open_app(command: &str) -> String {
     }
 }
 
+/// Calls Rofiant's Brave Search proxy (the real BRAVE_API_KEY stays
+/// server-side, same pattern as GROQ_PROXY_URL / DMC_PROXY_URL) and returns
+/// the raw `web.results` array on success.
+async fn brave_search(client: &reqwest::Client, access_token: &str, query: &str) -> Result<Vec<Value>, String> {
+    let resp = client
+        .post(BRAVE_SEARCH_PROXY_URL)
+        .bearer_auth(access_token)
+        .json(&json!({ "query": query, "count": 5 }))
+        .send()
+        .await
+        .map_err(|e| format!("Error running web search: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Web search error ({status}): {text}"));
+    }
+
+    let body: Value = resp.json().await.map_err(|e| format!("Error parsing web search response: {e}"))?;
+    Ok(body["web"]["results"].as_array().cloned().unwrap_or_default())
+}
+
+/// Formats search results as numbered title/url/snippet blocks for the model
+/// to read and cite.
+fn format_search_results(query: &str, results: &[Value]) -> String {
+    if results.is_empty() {
+        return format!("No web results found for \"{query}\".");
+    }
+    results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let title = r["title"].as_str().unwrap_or("(untitled)");
+            let url = r["url"].as_str().unwrap_or("");
+            let description = r["description"].as_str().unwrap_or("");
+            format!("{}. {title}\n{url}\n{description}", i + 1)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Builds the `@@sources@@<json>` marker line the frontend renders as a row
+/// of favicon source chips beneath the search — same "own text channel,
+/// never sent back to the model" trick as the `@@tool:...@@` progress
+/// labels (see emit_text call sites below).
+fn sources_marker(results: &[Value]) -> String {
+    let sources: Vec<Value> = results
+        .iter()
+        .filter_map(|r| {
+            let title = r["title"].as_str()?;
+            let url = r["url"].as_str()?;
+            Some(json!({ "title": title, "url": url }))
+        })
+        .collect();
+    format!("@@sources@@{}\n\n", Value::Array(sources))
+}
+
 fn tools_schema() -> Value {
     json!([
         {
@@ -1057,11 +1115,25 @@ fn tools_schema() -> Value {
                     "required": ["title", "body"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web (via Brave Search) and get back a list of result titles, URLs, and snippets. Use this whenever you need current information, facts you're unsure about, or anything beyond your training data — don't guess or rely on stale knowledge when a quick search can confirm it. The UI already shows the sources as a row of site icons, so don't repeat the raw URLs back — just summarize the findings in prose or a numbered list (never a Markdown table).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "The search query." }
+                    },
+                    "required": ["query"]
+                }
+            }
         }
     ])
 }
 
-fn system_prompt(base: &std::path::Path) -> String {
+fn system_prompt(base: &std::path::Path, is_pro: bool) -> String {
     let home = home_dir();
     let location_paragraph = if base == std::path::Path::new(&home) {
         format!(
@@ -1080,18 +1152,37 @@ deliberately need the user's actual home directory instead.",
             base.display()
         )
     };
+    // web_search is a Pro/Ultra feature (see brave-search-proxy's plan check) — free
+    // users never get the tool in tools_schema(), so don't advertise or instruct
+    // its use here either.
+    let tools_clause = if is_pro {
+        "tools: list_directory, read_file, write_file, edit_file, run_command, get_clipboard, set_clipboard, \
+take_screenshot, save_screenshot, list_processes, kill_process, open_app, send_notification, and \
+web_search."
+    } else {
+        "tools: list_directory, read_file, write_file, edit_file, run_command, get_clipboard, set_clipboard, \
+take_screenshot, save_screenshot, list_processes, kill_process, open_app, and send_notification."
+    };
+    let search_instruction = if is_pro {
+        " In particular, when the user asks you to search, look up, or find something \
+online, call web_search immediately in that same reply — don't respond with an offer to help or a \
+request for clarification first; the message asking you to search already is the complete request."
+    } else {
+        ""
+    };
     format!(
         "You are Rofiant, an AI assistant with real, direct access to the user's computer through \
-tools: list_directory, read_file, write_file, edit_file, run_command, get_clipboard, set_clipboard, \
-take_screenshot, save_screenshot, list_processes, kill_process, open_app, and send_notification. \
-These are not simulations — they execute for real on the user's machine. \
+{tools_clause} These are not simulations — they execute for real on the user's machine. \
 {location_paragraph} Prefer open_app over run_command for launching GUI \
 applications, since run_command waits for the process to exit and will hang. Use take_screenshot \
 when you need to see what's currently on screen; use save_screenshot instead when the user wants \
 the screenshot saved as a file — it captures and writes the PNG directly, so never try to save a \
 screenshot via run_command (scrot, import, etc.) or by piping take_screenshot's output through \
 write_file. Use tools proactively whenever they would help \
-answer a request. Never claim you lack access to the file system, the terminal, the clipboard, \
+answer a request — but a plain greeting or short reply like \"hi\" or \"test\" is not a request for \
+anything on the user's computer, so don't call a tool unless the message actually asks for something \
+a tool is needed for.{search_instruction} \
+Never claim you lack access to the file system, the terminal, the clipboard, \
 running processes, or the screen — you have it. Act like a normal, capable assistant: just do the \
 task. Only pause to ask before something destructive or irreversible (deleting data, killing an \
 important process, overwriting something important, anything that can't be undone). \
@@ -1105,7 +1196,10 @@ the model didn't mean to touch. After editing code, if the project has an obviou
 change (a type checker, test suite, linter, build command), run it with run_command before calling \
 the task done, and fix what it reports. Format replies \
 in plain Markdown: real spaces, never HTML entities like &nbsp;; fenced ``` code blocks for file \
-listings, command output, or code, not single backticks. Skip decorative emoji unless the user uses \
+listings, command output, or code, not single backticks. Never use Markdown tables (pipe-and-dash \
+`| a | b |` syntax) — this UI has no table renderer, so they show up as broken literal pipe \
+characters; use a numbered or bulleted list instead whenever you'd otherwise reach for a table \
+(e.g. summarizing web_search results). Skip decorative emoji unless the user uses \
 them first. Call tools only through the real tool-calling mechanism — never type out tool-call \
 syntax as plain text (e.g. don't write things like <function=name>{{...}}</function> in your reply). \
 If you want to lay out a multi-step plan before acting, describe it in plain language without any \
@@ -1125,6 +1219,7 @@ async fn send_chat(
     provider: Option<ProviderConfig>,
     effort: Option<String>,
     cwd: Option<String>,
+    is_pro: Option<bool>,
 ) -> Result<(), String> {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     cancellations.0.lock().unwrap().insert(request_id.clone(), cancel_tx);
@@ -1139,6 +1234,7 @@ async fn send_chat(
         provider,
         effort,
         cwd,
+        is_pro.unwrap_or(false),
         cancel_rx,
     )
     .await;
@@ -1421,6 +1517,21 @@ fn strip_leaked_tool_schema_syntax(text: &str) -> String {
     head.to_string()
 }
 
+/// Some Llama 3.1 tool-use models on Groq, when they decide a tool isn't
+/// needed, reply with only a boilerplate sentence saying so (e.g. "No
+/// function calls are made.") instead of actually answering the message.
+/// Detected narrowly — a single short line starting with the tell-tale
+/// phrase — so a normal reply that happens to discuss function calls isn't
+/// misidentified.
+fn is_no_tool_call_boilerplate(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() || t.lines().count() > 1 || t.len() > 80 {
+        return false;
+    }
+    let lower = t.trim_end_matches('.').to_lowercase();
+    lower.starts_with("no function call") || lower.starts_with("no tool call") || lower.starts_with("no tools were called")
+}
+
 fn emit_text(app: &AppHandle, request_id: &str, text: impl Into<String>) {
     emit_delta(app, request_id, text, false);
 }
@@ -1450,6 +1561,7 @@ async fn run_agent(
     provider: Option<ProviderConfig>,
     effort: Option<String>,
     cwd: Option<String>,
+    is_pro: bool,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
     // The active conversation's worktree when one is attached, or home
@@ -1480,7 +1592,7 @@ async fn run_agent(
     // frontend sends (custom instructions, active agent prompt, rules,
     // plan-mode instruction) into the one system message instead of
     // sending them as separate entries.
-    let mut system_content = system_prompt(&base);
+    let mut system_content = system_prompt(&base, is_pro);
     let mut rest: Vec<ChatMessage> = Vec::with_capacity(messages.len());
     for m in messages {
         if m.role == "system" && m.image_data_url.is_none() {
@@ -1526,6 +1638,12 @@ async fn run_agent(
     // before giving up and surfacing it to the user.
     let mut tool_use_failed_retries = 0;
     const MAX_TOOL_USE_FAILED_RETRIES: u32 = 3;
+    // Llama 3.1 tool-use models on Groq sometimes decide not to call a tool
+    // but, instead of just answering normally, reply with only a boilerplate
+    // sentence stating that ("No function calls are made."). Drop tools and
+    // retry once so the model answers for real instead of narrating its own
+    // non-decision.
+    let mut no_tool_call_boilerplate_retried = false;
 
     let mut step = 0;
     while step < MAX_AGENT_STEPS {
@@ -1546,6 +1664,13 @@ async fn run_agent(
         }
         if include_tools {
             let mut tools = tools_schema();
+            if let Some(arr) = tools.as_array_mut() {
+                // web_search is Pro/Ultra only (brave-search-proxy 403s free
+                // users) — don't offer the tool at all on the free plan.
+                if !is_pro {
+                    arr.retain(|t| t["function"]["name"] != "web_search");
+                }
+            }
             let mcp_tools = mcp::tool_schemas(app.state::<mcp::McpState>().inner()).await;
             if let Some(arr) = tools.as_array_mut() {
                 arr.extend(mcp_tools);
@@ -1682,6 +1807,14 @@ async fn run_agent(
             let text = strip_leaked_tool_syntax(&content_acc);
             let text = strip_leaked_pseudo_tool_syntax(&text);
             let text = strip_leaked_tool_schema_syntax(&text);
+
+            if include_tools && !no_tool_call_boilerplate_retried && is_no_tool_call_boilerplate(&text) {
+                no_tool_call_boilerplate_retried = true;
+                include_tools = false;
+                emit_replace(app, request_id, "");
+                continue;
+            }
+
             if text != content_acc {
                 emit_replace(app, request_id, text);
             }
@@ -1718,6 +1851,7 @@ async fn run_agent(
             let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
             let path = args["path"].as_str().unwrap_or(".");
             let command = args["command"].as_str().unwrap_or("");
+            let query = args["query"].as_str().unwrap_or("");
             let call_id = call["id"].as_str().unwrap_or("").to_string();
 
             let label = match name {
@@ -1737,6 +1871,7 @@ async fn run_agent(
                 }
                 "open_app" => format!("@@tool:open_app@@Launching `{command}`\n\n"),
                 "send_notification" => "@@tool:send_notification@@Sending notification\n\n".to_string(),
+                "web_search" => format!("@@tool:web_search@@Searching \"{query}\"\n\n"),
                 other => format!("@@tool:{other}@@Running `{other}`\n\n"),
             };
             emit_text(app, request_id, label);
@@ -1845,6 +1980,15 @@ async fn run_agent(
                         Err(e) => format!("Error sending notification: {e}"),
                     }
                 }
+                "web_search" => match brave_search(&client, access_token, query).await {
+                    Ok(results) => {
+                        if !results.is_empty() {
+                            emit_text(app, request_id, sources_marker(&results));
+                        }
+                        format_search_results(query, &results)
+                    }
+                    Err(e) => e,
+                },
                 other => format!("Unknown tool: {other}"),
                 }
             };

@@ -4,7 +4,17 @@ import type { Message } from "../types";
 import { MarkdownLite } from "../lib/markdown-lite";
 
 function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatDuration(ms: number) {
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds % 60)}s`;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -44,7 +54,7 @@ export const MessageBubble = memo(function MessageBubble({
     return (
       <div>
         <div className="flex justify-end">
-          <div className="max-w-[85%] sm:max-w-[70%] rounded-xl border border-border bg-card px-4 py-3 text-foreground leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.04)] break-words">
+          <div className="max-w-[85%] sm:max-w-[70%] rounded-md border border-border bg-card px-3 py-2 text-foreground leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.04)] break-words">
             {message.imageDataUrl && (
               <img
                 src={message.imageDataUrl}
@@ -57,7 +67,9 @@ export const MessageBubble = memo(function MessageBubble({
         </div>
         <div className="flex items-center justify-end gap-2 mt-1 px-0.5">
           {showTimestamp && (
-            <div className="text-[11px] text-foreground-muted">{formatTime(message.createdAt)}</div>
+            <div className="text-[11px] text-foreground-muted">
+              {formatTime(message.createdAt)}
+            </div>
           )}
           <CopyButton text={message.content} />
         </div>
@@ -72,7 +84,11 @@ export const MessageBubble = memo(function MessageBubble({
       <MarkdownLite text={message.content} />
       <div className="flex items-center gap-2 mt-1">
         {showTimestamp && (
-          <div className="text-[11px] text-foreground-muted">{formatTime(message.createdAt)}</div>
+          <div className="text-[11px] text-foreground-muted">
+            {formatTime(message.createdAt)}
+            {message.durationMs != null &&
+              ` · ${formatDuration(message.durationMs)}`}
+          </div>
         )}
         <CopyButton text={message.content} />
       </div>

@@ -6,6 +6,7 @@ export interface Message {
   content: string;
   imageDataUrl?: string;
   createdAt: number;
+  durationMs?: number;
 }
 
 export type AgentStatus = "idle" | "running" | "done";

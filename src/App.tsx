@@ -652,6 +652,7 @@ function App() {
         createdAt: Date.now(),
       };
       const assistantId = makeId();
+      const requestStartedAt = Date.now();
       let targetId = activeId;
 
       if (!targetId) {
@@ -782,6 +783,7 @@ function App() {
           },
           settings.reasoningEffort,
           existing?.worktreePath,
+          isPro,
         );
         if (settings.responseSound) playDoneSound();
         if (settings.notifyOnResponse) {
@@ -793,11 +795,22 @@ function App() {
       } finally {
         activeRequestIdsRef.current.delete(targetId);
         setConversations((prev) =>
-          prev.map((c) => (c.id === targetId ? { ...c, status: "done", updatedAt: Date.now() } : c)),
+          prev.map((c) =>
+            c.id === targetId
+              ? {
+                  ...c,
+                  status: "done",
+                  updatedAt: Date.now(),
+                  messages: c.messages.map((m) =>
+                    m.id === assistantId ? { ...m, durationMs: Date.now() - requestStartedAt } : m,
+                  ),
+                }
+              : c,
+          ),
         );
       }
     },
-    [activeId, settings, session, conversations, rules, handleCommand],
+    [activeId, settings, session, conversations, rules, handleCommand, isPro],
   );
 
   const handleStop = useCallback(() => {
@@ -1087,6 +1100,7 @@ function App() {
           onSelect={setActiveId}
           onClose={handleCloseTab}
           onNew={handleNew}
+          onRename={handleRenameConversation}
           filesPanelOpen={filesPanelOpen}
           onToggleFilesPanel={() => setFilesPanelOpen((v) => !v)}
           changedFilesCount={fileChanges.filter((f) => f.conversationId === activeId).length}

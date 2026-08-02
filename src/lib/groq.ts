@@ -91,6 +91,7 @@ export async function sendChatMessage(
   onToolApproval?: (req: ToolApprovalRequest) => void,
   effort?: string | null,
   cwd?: string | null,
+  isPro?: boolean,
 ): Promise<void> {
   const requestId = crypto.randomUUID();
   onRequestId?.(requestId);
@@ -144,6 +145,7 @@ export async function sendChatMessage(
         provider: provider ?? null,
         effort: effort ?? null,
         cwd: cwd ?? null,
+        isPro: isPro ?? false,
       }).catch((err) => {
         cleanup();
         reject(err instanceof Error ? err : new Error(String(err)));
