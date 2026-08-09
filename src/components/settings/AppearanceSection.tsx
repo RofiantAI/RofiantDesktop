@@ -23,6 +23,17 @@ export function AppearanceSection({
             ]}
           />
         </Row>
+        {/* <Row label="UI style" description="Visual style for panels, cards, and buttons">
+          <Dropdown<UiStyle>
+            value={settings.uiStyle}
+            onChange={(v) => onChange({ uiStyle: v })}
+            options={[
+              { value: "default", label: "Default" },
+              { value: "clay", label: "Clay" },
+              { value: "glass", label: "Liquid Glass" },
+            ]}
+          />
+        </Row> */}
         <Row label="Font size">
           <SegmentedControl<FontSize>
             value={settings.fontSize}

@@ -8,6 +8,10 @@ export const SLASH_COMMANDS: SlashCommandSpec[] = [
   { cmd: "/rule create", desc: "Add a rule for the AI to follow" },
   { cmd: "/rule list", desc: "List saved rules" },
   { cmd: "/rule remove", desc: "Remove a rule by number" },
+  { cmd: "/help", desc: "List available commands" },
+  { cmd: "/new", desc: "Start a new chat" },
+  { cmd: "/rename", desc: "Rename the current chat" },
+  { cmd: "/export", desc: "Export all conversations as JSON" },
 ];
 
 export type SlashCommand =
@@ -15,6 +19,10 @@ export type SlashCommand =
   | { type: "rule-create"; text: string }
   | { type: "rule-list" }
   | { type: "rule-remove"; target: string }
+  | { type: "help" }
+  | { type: "new" }
+  | { type: "rename"; title: string }
+  | { type: "export" }
   | { type: "unknown"; raw: string };
 
 export function parseSlashCommand(input: string): SlashCommand | null {
@@ -27,6 +35,10 @@ export function parseSlashCommand(input: string): SlashCommand | null {
   const rest = firstSpace === -1 ? "" : body.slice(firstSpace + 1).trim();
 
   if (cmd === "clear") return { type: "clear" };
+  if (cmd === "help") return { type: "help" };
+  if (cmd === "new") return { type: "new" };
+  if (cmd === "rename") return { type: "rename", title: rest };
+  if (cmd === "export") return { type: "export" };
 
   if (cmd === "rule") {
     const secondSpace = rest.indexOf(" ");

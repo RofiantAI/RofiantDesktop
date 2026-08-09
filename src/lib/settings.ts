@@ -1,9 +1,10 @@
 import type { CustomProvider } from "./providers";
 import type { Agent, ChatMode } from "./agents";
 import type { McpServerConfig } from "./mcp";
-import { DEFAULT_EFFORT, type EffortLevel } from "./models";
+import { DEFAULT_EFFORT, DEFAULT_MODEL, type EffortLevel } from "./models";
 
 export type Theme = "light" | "dark" | "system";
+export type UiStyle = "default" | "clay" | "glass";
 export type FontSize = "sm" | "md" | "lg";
 export type Density = "compact" | "comfortable";
 export type UiScale = "80" | "90" | "100" | "110" | "125" | "150";
@@ -16,6 +17,7 @@ export interface AppSettings {
   customInstructions: string;
   contextLimit: number;
   theme: Theme;
+  uiStyle: UiStyle;
   fontSize: FontSize;
   density: Density;
   uiScale: UiScale;
@@ -31,15 +33,17 @@ export interface AppSettings {
   telemetryEnabled: boolean;
   mcpServers: McpServerConfig[];
   minimizeToTray: boolean;
+  widgetEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  model: "openai/gpt-oss-120b",
+  model: DEFAULT_MODEL,
   reasoningEffort: DEFAULT_EFFORT,
   customProviders: [],
   customInstructions: "",
   contextLimit: 20,
-  theme: "light",
+  theme: "dark",
+  uiStyle: "default",
   fontSize: "md",
   density: "comfortable",
   uiScale: "100",
@@ -55,6 +59,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   telemetryEnabled: true,
   mcpServers: [],
   minimizeToTray: false,
+  widgetEnabled: true,
 };
 
 const KEY = "rofiant_settings";
@@ -63,7 +68,11 @@ export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const merged = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    // "dark-classic" was folded into "dark" — migrate anyone who had it
+    // explicitly selected so they don't silently fall back to light.
+    if ((merged.theme as string) === "dark-classic") merged.theme = "dark";
+    return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }

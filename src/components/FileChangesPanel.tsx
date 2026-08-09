@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { diffLines } from "diff";
-import { FileText, FilePenLine, Pencil, X, TerminalSquare, ChevronDown, ChevronUp } from "lucide-react";
+import { FileText, FilePenLine, Pencil, X, TerminalSquare, Globe } from "lucide-react";
 import type { FileChange } from "../types";
 import { TerminalPanel } from "./TerminalPanel";
+import { BrowserPanel } from "./BrowserPanel";
 
 const WIDTH_KEY = "rofiant_file_changes_panel_width";
 const MIN_WIDTH = 280;
@@ -15,15 +16,12 @@ function loadWidth() {
   return DEFAULT_WIDTH;
 }
 
-const TERMINAL_HEIGHT_KEY = "rofiant_file_changes_terminal_height";
-const MIN_TERMINAL_HEIGHT = 100;
-const MAX_TERMINAL_HEIGHT = 720;
-const DEFAULT_TERMINAL_HEIGHT = 240;
+type PanelTab = "files" | "browser" | "terminal";
+const TAB_KEY = "rofiant_file_changes_panel_tab";
 
-function loadTerminalHeight() {
-  const raw = Number(localStorage.getItem(TERMINAL_HEIGHT_KEY));
-  if (Number.isFinite(raw) && raw >= MIN_TERMINAL_HEIGHT && raw <= MAX_TERMINAL_HEIGHT) return raw;
-  return DEFAULT_TERMINAL_HEIGHT;
+function loadTab(): PanelTab {
+  const raw = localStorage.getItem(TAB_KEY);
+  return raw === "browser" || raw === "terminal" || raw === "files" ? raw : "files";
 }
 
 export function shortPath(path: string) {
@@ -164,26 +162,24 @@ export function FileChangesPanel({
   open,
   onClose,
   onSaveChange,
-  terminalMinimized,
-  onToggleTerminalMinimized,
   terminalCwd,
 }: {
   changes: FileChange[];
   open: boolean;
   onClose: () => void;
   onSaveChange?: (change: FileChange, content: string) => Promise<void>;
-  terminalMinimized: boolean;
-  onToggleTerminalMinimized: () => void;
   terminalCwd?: string;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(changes.at(-1)?.id ?? null);
   const [width, setWidth] = useState(loadWidth);
   const [isDragging, setIsDragging] = useState(false);
   const draggingRef = useRef(false);
-  const [terminalHeight, setTerminalHeight] = useState(loadTerminalHeight);
-  const draggingTerminalRef = useRef(false);
-  const dragTerminalBottomRef = useRef(0);
+  const [tab, setTab] = useState<PanelTab>(loadTab);
   const asideRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem(TAB_KEY, tab);
+  }, [tab]);
 
   // Re-select the newest change only when the count changes — see the same
   // pattern (and rationale) in ChangeHistoryPage.
@@ -191,57 +187,35 @@ export function FileChangesPanel({
     setSelectedId(changes.at(-1)?.id ?? null);
   }, [changes.length]); // oxlint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    function onMouseMove(e: MouseEvent) {
-      if (!draggingRef.current) return;
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX));
-      setWidth(next);
-    }
-    function onMouseUp() {
-      if (!draggingRef.current) return;
-      draggingRef.current = false;
-      setIsDragging(false);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      setWidth((w) => {
-        localStorage.setItem(WIDTH_KEY, String(w));
-        return w;
-      });
-    }
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-    return () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-  }, []);
-
-  useEffect(() => {
-    function onMouseMove(e: MouseEvent) {
-      if (!draggingTerminalRef.current) return;
-      const next = Math.min(
-        MAX_TERMINAL_HEIGHT,
-        Math.max(MIN_TERMINAL_HEIGHT, dragTerminalBottomRef.current - e.clientY),
-      );
-      setTerminalHeight(next);
-    }
-    function onMouseUp() {
-      if (!draggingTerminalRef.current) return;
-      draggingTerminalRef.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      setTerminalHeight((h) => {
-        localStorage.setItem(TERMINAL_HEIGHT_KEY, String(h));
-        return h;
-      });
-    }
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-    return () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-  }, []);
+  // Pointer capture (not document-level mouse listeners) so the drag
+  // survives the cursor crossing into the terminal or the browser-preview
+  // iframe — those own their own mouse events, so a document listener would
+  // never see the move/up and the resize would get stuck "on".
+  function handleResizePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    draggingRef.current = true;
+    setIsDragging(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
+  function handleResizePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!draggingRef.current) return;
+    const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX));
+    setWidth(next);
+  }
+  function handleResizePointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    setIsDragging(false);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    setWidth((w) => {
+      localStorage.setItem(WIDTH_KEY, String(w));
+      return w;
+    });
+  }
 
   const selected = changes.find((c) => c.id === selectedId) ?? changes.at(-1) ?? null;
 
@@ -259,136 +233,134 @@ export function FileChangesPanel({
         style={{ width }}
       >
         <div
-          onMouseDown={(e) => {
-            e.preventDefault();
-            draggingRef.current = true;
-            setIsDragging(true);
-            document.body.style.cursor = "col-resize";
-            document.body.style.userSelect = "none";
-          }}
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerUp}
           className="absolute left-0 top-0 bottom-0 w-1.5 -translate-x-1/2 cursor-col-resize z-10 hover:bg-accent-primary/30 transition-colors"
         />
-        <div className="flex items-center justify-between h-11 px-3 border-b border-border shrink-0">
-          <div className="flex items-center gap-2 text-[13px] text-foreground">
-            <FilePenLine className="w-3.5 h-3.5 text-foreground-muted" />
-            Changed files
-            {changes.length > 0 && (
-              <span className="text-[11px] text-foreground-muted font-normal">{changes.length}</span>
-            )}
+        {isDragging && (
+          // Pointer capture keeps the handle receiving events even when the
+          // cursor moves over the terminal, but it can't reach across a
+          // cross-document iframe boundary — the browser preview swallows
+          // the pointer once it's physically over it. This overlay sits
+          // above the iframe so the pointer never actually enters it while
+          // dragging.
+          <div className="absolute inset-0 z-20" style={{ cursor: "col-resize" }} />
+        )}
+        <div className="flex items-center justify-between h-11 px-1.5 border-b border-border shrink-0">
+          <div className="flex items-center gap-0.5">
+            {(
+              [
+                { id: "files", label: "Files", icon: FilePenLine, badge: changes.length || null },
+                { id: "browser", label: "Browser", icon: Globe, badge: null },
+                { id: "terminal", label: "Terminal", icon: TerminalSquare, badge: null },
+              ] as const
+            ).map(({ id, label, icon: Icon, badge }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                title={label}
+                aria-label={label}
+                aria-pressed={tab === id}
+                className={`flex items-center gap-1.5 px-2 h-7 rounded-md text-[12px] font-medium transition-colors ${
+                  tab === id
+                    ? "bg-background-tertiary text-foreground"
+                    : "text-foreground-muted hover:bg-background-tertiary/60 hover:text-foreground"
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {label}
+                {badge !== null && (
+                  <span className="text-[10px] text-foreground-muted font-normal">{badge}</span>
+                )}
+              </button>
+            ))}
           </div>
           <button
             type="button"
             onClick={onClose}
             title="Close"
-            aria-label="Close changed files panel"
-            className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
+            aria-label="Close panel"
+            className="flex items-center justify-center w-6 h-6 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors shrink-0"
           >
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <div className="flex-1 min-h-0 flex flex-col">
-        {changes.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center px-6 gap-2">
-            <FilePenLine className="w-5 h-5 text-foreground-muted opacity-50" />
-            <p className="text-[12px] text-foreground-muted">
-              Files the agent creates or edits in this conversation will show up here.
-            </p>
-          </div>
-        ) : (
-          <>
-            <div className="max-h-40 overflow-y-auto border-b border-border shrink-0">
-              {changes.map((c) => {
-                const isNew = c.oldContent === null;
-                const isSelected = selected?.id === c.id;
-                const parts = diffLines(c.oldContent ?? "", c.newContent);
-                const added = parts.filter((p) => p.added).reduce((n, p) => n + (p.count ?? 0), 0);
-                const removed = parts.filter((p) => p.removed).reduce((n, p) => n + (p.count ?? 0), 0);
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => setSelectedId(c.id)}
-                    title={shortPath(c.path)}
-                    className={`flex items-center gap-2 w-full px-3 py-2 text-left border-l-2 transition-colors ${
-                      isSelected
-                        ? "bg-background-tertiary border-accent-primary"
-                        : "border-transparent hover:bg-background-tertiary/60"
-                    }`}
-                  >
-                    <FileText className="w-3.5 h-3.5 shrink-0 text-foreground-muted" />
-                    <span className="flex-1 min-w-0 truncate text-[12px] text-foreground font-mono">
-                      {fileName(c.path)}
-                    </span>
-                    {!isNew && (added > 0 || removed > 0) && (
-                      <span className="text-[10px] font-mono shrink-0 space-x-1">
-                        {added > 0 && <span className="text-accent-success">+{added}</span>}
-                        {removed > 0 && <span className="text-red-500">-{removed}</span>}
-                      </span>
-                    )}
-                    <span
-                      className={`text-[10px] font-medium shrink-0 px-1.5 py-0.5 rounded ${
-                        isNew
-                          ? "bg-accent-success/10 text-accent-success"
-                          : "bg-accent-primary/10 text-accent-primary"
+        <div className={`flex-1 min-h-0 flex-col ${tab === "files" ? "flex" : "hidden"}`}>
+          {changes.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center px-6 gap-2">
+              <FilePenLine className="w-5 h-5 text-foreground-muted opacity-50" />
+              <p className="text-[12px] text-foreground-muted">
+                Files the agent creates or edits in this conversation will show up here.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="max-h-40 overflow-y-auto border-b border-border shrink-0">
+                {changes.map((c) => {
+                  const isNew = c.oldContent === null;
+                  const isSelected = selected?.id === c.id;
+                  const parts = diffLines(c.oldContent ?? "", c.newContent);
+                  const added = parts.filter((p) => p.added).reduce((n, p) => n + (p.count ?? 0), 0);
+                  const removed = parts.filter((p) => p.removed).reduce((n, p) => n + (p.count ?? 0), 0);
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setSelectedId(c.id)}
+                      title={shortPath(c.path)}
+                      className={`flex items-center gap-2 w-full px-3 py-2 text-left border-l-2 transition-colors ${
+                        isSelected
+                          ? "bg-background-tertiary border-accent-primary"
+                          : "border-transparent hover:bg-background-tertiary/60"
                       }`}
                     >
-                      {isNew ? "new" : "edit"}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              {selected && (
-                <DiffView
-                  change={selected}
-                  onSave={onSaveChange ? (content) => onSaveChange(selected, content) : undefined}
-                />
-              )}
-            </div>
-          </>
-        )}
+                      <FileText className="w-3.5 h-3.5 shrink-0 text-foreground-muted" />
+                      <span className="flex-1 min-w-0 truncate text-[12px] text-foreground font-mono">
+                        {fileName(c.path)}
+                      </span>
+                      {!isNew && (added > 0 || removed > 0) && (
+                        <span className="text-[10px] font-mono shrink-0 space-x-1">
+                          {added > 0 && <span className="text-accent-success">+{added}</span>}
+                          {removed > 0 && <span className="text-red-500">-{removed}</span>}
+                        </span>
+                      )}
+                      <span
+                        className={`text-[10px] font-medium shrink-0 px-1.5 py-0.5 rounded ${
+                          isNew
+                            ? "bg-accent-success/10 text-accent-success"
+                            : "bg-accent-primary/10 text-accent-primary"
+                        }`}
+                      >
+                        {isNew ? "new" : "edit"}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                {selected && (
+                  <DiffView
+                    change={selected}
+                    onSave={onSaveChange ? (content) => onSaveChange(selected, content) : undefined}
+                  />
+                )}
+              </div>
+            </>
+          )}
         </div>
 
-        {!terminalMinimized && (
-          <div
-            onMouseDown={(e) => {
-              e.preventDefault();
-              if (asideRef.current) {
-                dragTerminalBottomRef.current = asideRef.current.getBoundingClientRect().bottom;
-              }
-              draggingTerminalRef.current = true;
-              document.body.style.cursor = "row-resize";
-              document.body.style.userSelect = "none";
-            }}
-            className="h-1.5 shrink-0 border-t border-border cursor-row-resize hover:bg-accent-primary/30 transition-colors"
-          />
-        )}
-        <div className="shrink-0 border-t border-border">
-          <button
-            type="button"
-            onClick={onToggleTerminalMinimized}
-            aria-label={terminalMinimized ? "Show terminal" : "Hide terminal"}
-            title={terminalMinimized ? "Show terminal" : "Hide terminal"}
-            className="w-full flex items-center gap-1.5 px-2 h-7 text-[11px] font-medium text-foreground-muted hover:text-foreground transition-colors"
-          >
-            <TerminalSquare className="w-3.5 h-3.5" />
-            Terminal
-            <span className="flex-1" />
-            {terminalMinimized ? (
-              <ChevronUp className="w-3.5 h-3.5" />
-            ) : (
-              <ChevronDown className="w-3.5 h-3.5" />
-            )}
-          </button>
+        <div className={`flex-1 min-h-0 ${tab === "browser" ? "flex" : "hidden"}`}>
+          <BrowserPanel />
         </div>
-        <div
-          className="shrink-0 overflow-hidden"
-          style={{ height: terminalMinimized ? 0 : terminalHeight }}
-        >
-          {/* Remount (and spawn a fresh shell) when the active conversation's
-              project changes, so the terminal follows the active task. */}
+
+        {/* Kept mounted (just hidden) across tab switches so the shell stays
+            alive instead of getting killed and respawned every time the user
+            flips to Files or Browser and back. */}
+        <div className={`flex-1 min-h-0 ${tab === "terminal" ? "flex" : "hidden"}`}>
           <TerminalPanel key={terminalCwd ?? "home"} cwd={terminalCwd} />
         </div>
       </aside>

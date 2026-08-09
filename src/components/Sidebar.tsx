@@ -13,6 +13,7 @@ import {
   LogOut,
   MoreHorizontal,
   Pencil,
+  SquarePen,
   Pin,
   PinOff,
   Trash2,
@@ -518,7 +519,7 @@ export function Sidebar({
           onClick={onNew}
           className="flex items-center gap-2.5 w-full h-8 px-2 rounded-md text-sm text-foreground hover:bg-background-tertiary transition-colors"
         >
-          <Plus className="w-4 h-4 text-foreground-muted" />
+          <SquarePen className="w-4 h-4 text-foreground-muted" />
           <span className="flex-1 text-left">New Chat</span>
           <kbd className="text-[13px] text-foreground-muted">
             {modShortcut("⌘N")}

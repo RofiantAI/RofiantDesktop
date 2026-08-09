@@ -7,16 +7,22 @@ const SEGMENT_MS = 3000;
 // waiting for the whole recording to end — keeps perceived latency low for
 // long dictation. The final segment's transcribeSegment call chains after
 // every prior one via transcribeChainRef so segments land in order.
+const METER_BARS = 28;
+
 export function useVoiceRecording(accessToken: string | null, onTranscript: (text: string) => void) {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [levels, setLevels] = useState<number[]>(() => Array(METER_BARS).fill(0));
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const isRecordingRef = useRef(false);
   const transcribeChainRef = useRef<Promise<void>>(Promise.resolve());
   const segmentTimeoutRef = useRef<number | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const meterRafRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
@@ -25,6 +31,41 @@ export function useVoiceRecording(accessToken: string | null, onTranscript: (tex
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ponytail: a single AnalyserNode sampled into a handful of bars gives a
+  // convincing volume meter without a real spectrum view. Swap for more
+  // bars / a log-frequency mapping if the UI ever wants a finer waveform.
+  function startMeter(stream: MediaStream) {
+    const ctx = new AudioContext();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 64;
+    source.connect(analyser);
+    audioCtxRef.current = ctx;
+    analyserRef.current = analyser;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const step = Math.floor(data.length / METER_BARS);
+    const tick = () => {
+      if (!isRecordingRef.current || !analyserRef.current) return;
+      analyserRef.current.getByteFrequencyData(data);
+      setLevels(
+        Array.from({ length: METER_BARS }, (_, i) => data[i * step] / 255),
+      );
+      meterRafRef.current = requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  function stopMeter() {
+    if (meterRafRef.current !== null) {
+      cancelAnimationFrame(meterRafRef.current);
+      meterRafRef.current = null;
+    }
+    analyserRef.current = null;
+    audioCtxRef.current?.close();
+    audioCtxRef.current = null;
+    setLevels(Array(METER_BARS).fill(0));
+  }
 
   function blobToBase64(blob: Blob): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -99,6 +140,7 @@ export function useVoiceRecording(accessToken: string | null, onTranscript: (tex
       transcribeChainRef.current = Promise.resolve();
       setIsRecording(true);
       runSegment();
+      startMeter(stream);
     } catch {
       setVoiceError("Microphone access denied");
     }
@@ -107,6 +149,7 @@ export function useVoiceRecording(accessToken: string | null, onTranscript: (tex
   function stopRecording() {
     isRecordingRef.current = false;
     setIsRecording(false);
+    stopMeter();
     if (segmentTimeoutRef.current !== null) {
       window.clearTimeout(segmentTimeoutRef.current);
       segmentTimeoutRef.current = null;
@@ -122,5 +165,5 @@ export function useVoiceRecording(accessToken: string | null, onTranscript: (tex
     else void startRecording();
   }
 
-  return { isRecording, isTranscribing, voiceError, setVoiceError, toggleRecording };
+  return { isRecording, isTranscribing, voiceError, setVoiceError, toggleRecording, levels };
 }

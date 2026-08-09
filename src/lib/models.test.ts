@@ -2,10 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_FREE_MODEL,
   DEFAULT_PRO_MODEL,
-  DMC_MODELS,
   clampModelForPlan,
   defaultModelForPlan,
-  isDmcModel,
   isLogfareModel,
   isProModel,
   isVisionModel,
@@ -28,15 +26,16 @@ describe("models", () => {
     expect(clampModelForPlan("custom:my-provider", true)).toBe("custom:my-provider");
   });
 
-  it("clampModelForPlan passes DMC models through untouched regardless of plan", () => {
-    expect(clampModelForPlan(DMC_MODELS[0].id, false)).toBe(DMC_MODELS[0].id);
-    expect(clampModelForPlan(DMC_MODELS[0].id, true)).toBe(DMC_MODELS[0].id);
-  });
+  // DMC models commented out for now — see models.ts.
+  // it("clampModelForPlan passes DMC models through untouched regardless of plan", () => {
+  //   expect(clampModelForPlan(DMC_MODELS[0].id, false)).toBe(DMC_MODELS[0].id);
+  //   expect(clampModelForPlan(DMC_MODELS[0].id, true)).toBe(DMC_MODELS[0].id);
+  // });
 
-  it("isDmcModel flags DMC model ids only", () => {
-    expect(isDmcModel(DMC_MODELS[0].id)).toBe(true);
-    expect(isDmcModel(DEFAULT_FREE_MODEL)).toBe(false);
-  });
+  // it("isDmcModel flags DMC model ids only", () => {
+  //   expect(isDmcModel(DMC_MODELS[0].id)).toBe(true);
+  //   expect(isDmcModel(DEFAULT_FREE_MODEL)).toBe(false);
+  // });
 
   it("clampModelForPlan falls back to the plan default for unknown models", () => {
     expect(clampModelForPlan("does-not-exist", false)).toBe(DEFAULT_FREE_MODEL);

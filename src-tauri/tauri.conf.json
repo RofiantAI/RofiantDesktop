@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Rofiant",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "identifier": "com.rofiant.rofiant",
   "build": {
     "frontendDist": "../dist",
@@ -19,11 +19,12 @@
         "minHeight": 560,
         "resizable": true,
         "fullscreen": false,
-        "decorations": false
+        "decorations": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' blob:; connect-src 'self' https://nxwzaztltnqdslnvehva.supabase.co https://api.groq.com http://localhost:11434 https:; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' blob:; connect-src 'self' https://nxwzaztltnqdslnvehva.supabase.co https://api.groq.com http://localhost:11434 https:; font-src 'self' data:; frame-src http://localhost:* http://127.0.0.1:* https:"
     }
   },
   "bundle": {

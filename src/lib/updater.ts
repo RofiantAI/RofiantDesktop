@@ -32,5 +32,12 @@ export async function installUpdate(
         break;
     }
   });
+  // relaunch() kills this process immediately. The webview's localStorage
+  // (Supabase session included) is flushed to disk asynchronously by the
+  // underlying engine (WebView2/WebKitGTK), not synchronously on setItem —
+  // killing the process right after install can race that flush and lose
+  // the session, forcing a fresh login on next start. A short delay gives
+  // the pending flush time to land before the process dies.
+  await new Promise((resolve) => setTimeout(resolve, 1000));
   await relaunch();
 }

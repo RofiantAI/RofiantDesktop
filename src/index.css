@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --background: #fafaf9;
-  --background-secondary: #f2f2ef;
-  --background-tertiary: #eeeeec;
+  --background: #faf9f8;
+  --background-secondary: #f5f3f1;
+  --background-tertiary: #efece9;
 
-  --foreground: #1a1a18;
-  --foreground-secondary: #6b6b67;
-  --foreground-muted: #9b9b96;
+  --foreground: #2c2826;
+  --foreground-secondary: #756f6c;
+  --foreground-muted: #9c9591;
 
   --accent-primary: #4d6bc6;
   --accent-secondary: #b8934a;
@@ -15,21 +15,21 @@
   --accent-warning: #c17f2e;
   --accent-orange: #c2632a;
 
-  --border: #e6e6e2;
-  --border-light: #d8d8d3;
+  --border: #eae8e6;
+  --border-light: #ded9d5;
 
   --card: #ffffff;
-  --card-hover: #f4f4f2;
+  --card-hover: #f5f3f1;
 
-  --badge-bg: #f0f0ee;
-  --badge-border: #d8d8d3;
+  --badge-bg: #f5f3f1;
+  --badge-border: #ded9d5;
 
-  --code-bg: #f2f2ef;
-  --code-border: #e2e2de;
+  --code-bg: #faf9f8;
+  --code-border: #eae8e6;
 
   --syntax-keyword: #a3477b;
   --syntax-string: #2f9e6e;
-  --syntax-comment: #9b9b96;
+  --syntax-comment: #9c9591;
   --syntax-number: #b8934a;
   --syntax-function: #4d6bc6;
 
@@ -106,6 +106,11 @@ body,
   height: 100%;
 }
 
+.widget-window body {
+  overflow: hidden;
+  background: transparent;
+}
+
 body {
   margin: 0;
   background: var(--background);
@@ -179,4 +184,124 @@ body {
 .reduce-motion * {
   transition: none !important;
   animation: none !important;
+}
+
+/* Clay shadows (matches rofiant-web) */
+.shadow-clay {
+  box-shadow:
+    10px 10px 24px rgb(0 0 0 / 0.35),
+    -6px -6px 16px rgb(255 255 255 / 0.08),
+    inset 2px 2px 3px rgb(255 255 255 / 0.25),
+    inset -4px -4px 8px rgb(0 0 0 / 0.25);
+}
+
+.shadow-clay-sm {
+  box-shadow:
+    6px 6px 14px rgb(0 0 0 / 0.3),
+    -4px -4px 10px rgb(255 255 255 / 0.06),
+    inset 1px 1px 2px rgb(255 255 255 / 0.2),
+    inset -3px -3px 6px rgb(0 0 0 / 0.2);
+}
+
+.shadow-clay-xs {
+  box-shadow:
+    4px 4px 10px rgb(0 0 0 / 0.45),
+    -3px -3px 8px rgb(255 255 255 / 0.15),
+    inset 1px 1px 2px rgb(255 255 255 / 0.3),
+    inset -2px -2px 5px rgb(0 0 0 / 0.3);
+}
+
+.shadow-clay-inset {
+  box-shadow:
+    inset 4px 4px 8px rgb(0 0 0 / 0.25),
+    inset -3px -3px 6px rgb(255 255 255 / 0.06);
+}
+
+/* UI style: Clay — extends clay shadows to surfaces app-wide */
+.ui-clay .bg-card,
+.ui-clay .bg-background-secondary,
+.ui-clay .bg-badge-bg {
+  box-shadow:
+    6px 6px 14px rgb(0 0 0 / 0.16),
+    -4px -4px 10px rgb(255 255 255 / 0.5),
+    inset 1px 1px 2px rgb(255 255 255 / 0.4),
+    inset -2px -2px 4px rgb(0 0 0 / 0.06);
+}
+
+.dark.ui-clay .bg-card,
+.dark.ui-clay .bg-background-secondary,
+.dark.ui-clay .bg-badge-bg {
+  box-shadow:
+    6px 6px 14px rgb(0 0 0 / 0.3),
+    -4px -4px 10px rgb(255 255 255 / 0.06),
+    inset 1px 1px 2px rgb(255 255 255 / 0.2),
+    inset -3px -3px 6px rgb(0 0 0 / 0.2);
+}
+
+.ui-clay button,
+.ui-clay .rounded-full {
+  transition:
+    box-shadow var(--transition-base),
+    filter var(--transition-base);
+}
+
+/* UI style: Liquid Glass — macOS-style frosted, refractive surfaces */
+.ui-glass {
+  --card: color-mix(in srgb, var(--card) 38%, transparent);
+  --card-hover: color-mix(in srgb, var(--card-hover) 50%, transparent);
+  --background-secondary: color-mix(in srgb, var(--background-secondary) 32%, transparent);
+  --background-tertiary: color-mix(in srgb, var(--background-tertiary) 32%, transparent);
+  --badge-bg: color-mix(in srgb, var(--badge-bg) 40%, transparent);
+  --border: color-mix(in srgb, var(--foreground) 8%, transparent);
+  --border-light: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.ui-glass body {
+  background-image:
+    radial-gradient(circle at 12% 10%, color-mix(in srgb, var(--accent-primary) 30%, transparent), transparent 40%),
+    radial-gradient(circle at 88% 20%, color-mix(in srgb, var(--accent-orange) 26%, transparent), transparent 45%),
+    radial-gradient(circle at 25% 90%, color-mix(in srgb, var(--accent-success) 18%, transparent), transparent 50%),
+    radial-gradient(circle at 80% 85%, color-mix(in srgb, var(--accent-secondary) 22%, transparent), transparent 50%);
+  background-attachment: fixed;
+}
+
+.ui-glass .bg-card,
+.ui-glass .bg-background-secondary,
+.ui-glass .bg-background-tertiary,
+.ui-glass .bg-badge-bg {
+  position: relative;
+  backdrop-filter: blur(32px) saturate(190%) brightness(1.06);
+  -webkit-backdrop-filter: blur(32px) saturate(190%) brightness(1.06);
+  background-image: linear-gradient(
+    165deg,
+    color-mix(in srgb, white 22%, transparent) 0%,
+    color-mix(in srgb, white 6%, transparent) 18%,
+    transparent 40%
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 45%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, white 12%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, black 10%, transparent),
+    0 8px 30px color-mix(in srgb, black 18%, transparent);
+}
+
+.dark.ui-glass .bg-card,
+.dark.ui-glass .bg-background-secondary,
+.dark.ui-glass .bg-background-tertiary,
+.dark.ui-glass .bg-badge-bg {
+  background-image: linear-gradient(
+    165deg,
+    color-mix(in srgb, white 14%, transparent) 0%,
+    color-mix(in srgb, white 3%, transparent) 18%,
+    transparent 40%
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, white 8%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, black 30%, transparent),
+    0 8px 30px color-mix(in srgb, black 45%, transparent);
+}
+
+.ui-glass ::selection {
+  background: color-mix(in srgb, var(--accent-primary) 35%, transparent);
 }

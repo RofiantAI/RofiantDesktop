@@ -9,6 +9,8 @@ export function AuthPage({ onClose }: { onClose: () => void }) {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [guestLoading, setGuestLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -39,6 +41,45 @@ export function AuthPage({ onClose }: { onClose: () => void }) {
     setError(null);
     setNotice("Continue in your browser to create your account, then come back here.");
     void openUrl(ROFIANT_SIGNUP_URL);
+  }
+
+  async function handleContinueAsGuest() {
+    setError(null);
+    setNotice(null);
+    setGuestLoading(true);
+    try {
+      // Anonymous Supabase session: gives chat a real (rate-limited, free-plan)
+      // access token so the backend proxies don't need a separate "no auth"
+      // path, while still letting people chat before creating an account.
+      const { error } = await supabase.auth.signInAnonymously();
+      if (error) throw error;
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGuestLoading(false);
+    }
+  }
+
+  async function handleForgotPassword() {
+    setNotice(null);
+    if (!email) {
+      setError("Enter your email above first.");
+      return;
+    }
+    setError(null);
+    setResetLoading(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: AUTH_REDIRECT_URL,
+      });
+      if (error) throw error;
+      setNotice("Check your email for a password reset link.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResetLoading(false);
+    }
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -119,7 +160,17 @@ export function AuthPage({ onClose }: { onClose: () => void }) {
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[12px] text-foreground-secondary">Password</label>
+            <div className="flex items-center justify-between">
+              <label className="text-[12px] text-foreground-secondary">Password</label>
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                disabled={resetLoading}
+                className="text-[12px] text-foreground-muted hover:text-foreground transition-colors disabled:opacity-60"
+              >
+                {resetLoading ? "Sending…" : "Forgot password?"}
+              </button>
+            </div>
             <input
               type="password"
               required
@@ -137,7 +188,7 @@ export function AuthPage({ onClose }: { onClose: () => void }) {
           <button
             type="submit"
             disabled={loading}
-            className="flex items-center justify-center gap-2 w-full h-9 rounded-lg bg-foreground text-background text-[14px] font-medium hover:opacity-90 disabled:opacity-60 transition-opacity mt-1"
+            className="flex items-center justify-center gap-2 w-full h-9 rounded-lg bg-foreground text-background text-[14px] font-medium shadow-clay-xs hover:brightness-95 active:shadow-clay-inset disabled:opacity-60 transition-[filter,box-shadow] mt-1"
           >
             {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             Sign in
@@ -154,10 +205,11 @@ export function AuthPage({ onClose }: { onClose: () => void }) {
           </button>
           <button
             type="button"
-            onClick={onClose}
-            className="text-foreground-muted hover:text-foreground transition-colors"
+            onClick={handleContinueAsGuest}
+            disabled={guestLoading}
+            className="text-foreground-muted hover:text-foreground transition-colors disabled:opacity-60"
           >
-            Continue without signing in
+            {guestLoading ? "Continuing…" : "Continue without signing in"}
           </button>
         </div>
       </div>

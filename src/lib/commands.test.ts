@@ -42,4 +42,24 @@ describe("parseSlashCommand", () => {
   it("trims surrounding whitespace before parsing", () => {
     expect(parseSlashCommand("  /clear  ")).toEqual({ type: "clear" });
   });
+
+  it("parses /help", () => {
+    expect(parseSlashCommand("/help")).toEqual({ type: "help" });
+  });
+
+  it("parses /new", () => {
+    expect(parseSlashCommand("/new")).toEqual({ type: "new" });
+  });
+
+  it("parses /rename with the remaining text as the title", () => {
+    expect(parseSlashCommand("/rename My Chat")).toEqual({ type: "rename", title: "My Chat" });
+  });
+
+  it("parses /rename with empty title", () => {
+    expect(parseSlashCommand("/rename")).toEqual({ type: "rename", title: "" });
+  });
+
+  it("parses /export", () => {
+    expect(parseSlashCommand("/export")).toEqual({ type: "export" });
+  });
 });

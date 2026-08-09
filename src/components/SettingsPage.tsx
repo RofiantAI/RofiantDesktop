@@ -9,6 +9,7 @@ import { ProvidersSection } from "./settings/ProvidersSection";
 import { McpSection } from "./settings/McpSection";
 import { ModelsSection } from "./settings/ModelsSection";
 import { AgentsSection } from "./settings/AgentsSection";
+import { SkillsSection } from "./settings/SkillsSection";
 import { AppearanceSection } from "./settings/AppearanceSection";
 import { ProfileSection } from "./settings/ProfileSection";
 import { ShortcutsSection } from "./settings/ShortcutsSection";
@@ -126,6 +127,7 @@ export function SettingsPage({
           {section === "agents" && (
             <AgentsSection settings={settings} onChange={onChange} confirm={confirm} />
           )}
+          {section === "skills" && <SkillsSection confirm={confirm} />}
           {section === "appearance" && <AppearanceSection settings={settings} onChange={onChange} />}
           {section === "profile" && (
             <ProfileSection

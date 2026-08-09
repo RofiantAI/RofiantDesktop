@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { Sidebar } from "./components/Sidebar";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { GetStartedCard } from "./components/GetStartedCard";
 import { TabBar } from "./components/TabBar";
 import { ChatPanel } from "./components/ChatPanel";
 const SettingsPage = lazy(() =>
@@ -44,26 +45,37 @@ import type { ChatUsage, ToolApprovalRequest } from "./lib/groq";
 // Project/worktree attach is disabled for now — see handleAttachProject
 // below, ProjectBar.tsx, and git_worktree_* in lib.rs.
 import { removeProjectWorktree } from "./lib/git";
-import { customProviderIdFromModel } from "./lib/providers";
+import { customModelId, customProviderIdFromModel } from "./lib/providers";
+import { upsertLocalModelProvider } from "./lib/ollama";
 import { supabase } from "./lib/supabase";
 import { insertUsageEvent } from "./lib/sync";
 import { loadSettings, saveSettings, resolveTheme, playDoneSound, notifyResponse } from "./lib/settings";
+import { loadOnboarding, saveOnboarding } from "./lib/onboarding";
+import type { OnboardingState } from "./lib/onboarding";
 import { connectMcpServer } from "./lib/mcp";
 import { track, setTelemetryEnabled, setTelemetryUserId } from "./lib/telemetry";
 import { loadFileChanges, saveFileChanges } from "./lib/fileChanges";
 import { loadFolders, saveFolders } from "./lib/folders";
+import {
+  loadConversations,
+  saveConversations,
+  loadOpenTabIds,
+  saveOpenTabIds,
+  loadActiveId,
+  saveActiveId,
+} from "./lib/conversations";
 import { checkForUpdate } from "./lib/updater";
 import type { AppSettings } from "./lib/settings";
 import { getUserAvatarUrl } from "./lib/user-avatar";
 import { planFromSession, isProPlan } from "./lib/plan";
 import { clampModelForPlan } from "./lib/models";
-import { parseSlashCommand } from "./lib/commands";
+import { parseSlashCommand, SLASH_COMMANDS } from "./lib/commands";
 import type { SlashCommand } from "./lib/commands";
 import { loadRules, saveRules, rulesToPrompt } from "./lib/rules";
 import type { Rule } from "./lib/rules";
-import { PLAN_MODE_INSTRUCTION } from "./lib/agents";
 import { isLinux, modShortcut } from "./lib/platform";
 import { parseAuthRedirect } from "./lib/auth-redirect";
+import { stripThinkTags } from "./lib/think";
 import type { Conversation, FileChange, Folder, Message } from "./types";
 
 interface FileChangeEventPayload {
@@ -73,11 +85,14 @@ interface FileChangeEventPayload {
   new_content: string;
 }
 
+type NavigationEntry =
+  | { page: "main"; conversationId: string | null }
+  | { page: "settings"; conversationId: string | null }
+  | { page: "history"; conversationId: string | null };
+
 function makeId() {
   return Math.random().toString(36).slice(2, 10);
 }
-
-const TERMINAL_MINIMIZED_KEY = "rofiant_file_changes_terminal_minimized";
 
 function makeConversation(title = "New chat"): Conversation {
   return {
@@ -91,14 +106,20 @@ function makeConversation(title = "New chat"): Conversation {
 
 function App() {
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [openTabIds, setOpenTabIds] = useState<string[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
+  const [openTabIds, setOpenTabIds] = useState<string[]>(() => loadOpenTabIds());
+  const [activeId, setActiveId] = useState<string | null>(() => loadActiveId());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarSettled, setSidebarSettled] = useState(true);
   const [maximized, setMaximized] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [onboarding, setOnboarding] = useState<OnboardingState>(() =>
+    loadOnboarding(loadConversations().length > 0),
+  );
+  const markOnboarding = useCallback((key: keyof Omit<OnboardingState, "dismissed">) => {
+    setOnboarding((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+  }, []);
   const [rules, setRules] = useState<Rule[]>(() => loadRules());
   const [session, setSession] = useState<Session | null>(null);
   // Set while a session exists but the account requires a second factor
@@ -109,17 +130,75 @@ function App() {
   const [fileChanges, setFileChanges] = useState<FileChange[]>(() => loadFileChanges());
   const [folders, setFolders] = useState<Folder[]>(() => loadFolders());
   const [filesPanelOpen, setFilesPanelOpen] = useState(false);
-  const [terminalMinimized, setTerminalMinimized] = useState(
-    () => localStorage.getItem(TERMINAL_MINIMIZED_KEY) === "1",
-  );
+  // A running agent turn can touch several files, each firing its own
+  // "file-change" event — without this, every one of those re-forces the
+  // panel open, so clicking Close mid-turn never actually sticks.
+  const filesPanelClosedByUserRef = useRef(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
+  const [navigation, setNavigation] = useState<{ entries: NavigationEntry[]; index: number }>({
+    entries: [{ page: "main", conversationId: null }],
+    index: 0,
+  });
   const [searchTrigger, setSearchTrigger] = useState(0);
   const [mcpConnectErrors, setMcpConnectErrors] = useState<{ id: string; name: string; error: string }[]>([]);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const activeRequestIdsRef = useRef<Map<string, string>>(new Map());
   const [toolApproval, setToolApproval] = useState<ToolApprovalRequest | null>(null);
+
+  const applyNavigation = useCallback((entry: NavigationEntry) => {
+    setActiveId(entry.conversationId);
+    setSettingsOpen(entry.page === "settings");
+    setHistoryOpen(entry.page === "history");
+  }, []);
+
+  const visit = useCallback(
+    (entry: NavigationEntry) => {
+      setNavigation((current) => {
+        const active = current.entries[current.index];
+        if (
+          active.page === entry.page &&
+          active.conversationId === entry.conversationId
+        ) {
+          return current;
+        }
+        return {
+          entries: [...current.entries.slice(0, current.index + 1), entry],
+          index: current.index + 1,
+        };
+      });
+      applyNavigation(entry);
+    },
+    [applyNavigation],
+  );
+
+  const goBack = useCallback(() => {
+    if (navigation.index === 0) return;
+    const index = navigation.index - 1;
+    applyNavigation(navigation.entries[index]);
+    setNavigation((current) => ({ ...current, index }));
+  }, [applyNavigation, navigation]);
+
+  const goForward = useCallback(() => {
+    if (navigation.index === navigation.entries.length - 1) return;
+    const index = navigation.index + 1;
+    applyNavigation(navigation.entries[index]);
+    setNavigation((current) => ({ ...current, index }));
+  }, [applyNavigation, navigation]);
+
+  const openMain = useCallback(
+    (conversationId: string | null) => visit({ page: "main", conversationId }),
+    [visit],
+  );
+  const openSettings = useCallback(() => {
+    visit({ page: "settings", conversationId: activeId });
+    markOnboarding("openedSettings");
+  }, [visit, activeId, markOnboarding]);
+  const openHistory = useCallback(
+    () => visit({ page: "history", conversationId: activeId }),
+    [visit, activeId],
+  );
 
   const handleToolApprovalDecision = useCallback((approved: boolean) => {
     setToolApproval((current) => {
@@ -141,6 +220,23 @@ function App() {
     if (!sidebarOpen) setSidebarSettled(false);
   }, [sidebarOpen]);
 
+  // With native drag-drop disabled (tauri.conf.json dragDropEnabled: false)
+  // so the composer's own drop zone can see HTML5 drag events, the browser's
+  // default action for any drop we don't explicitly handle is to navigate
+  // the whole window to the dropped file's raw contents. Block that default
+  // everywhere; drop zones that want the file call preventDefault in their
+  // own handler first, so this never overrides them, it just stops the
+  // window-hijack when a drop lands somewhere with no handler.
+  useEffect(() => {
+    const prevent = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
+
   useEffect(() => {
     const appWindow = getCurrentWindow();
     appWindow.isMaximized().then(setMaximized);
@@ -155,6 +251,12 @@ function App() {
   useEffect(() => {
     invoke("set_minimize_to_tray", { enabled: settings.minimizeToTray }).catch(() => {});
   }, [settings.minimizeToTray]);
+
+  // Desktop widget disabled for now — see GeneralSection.tsx and the tray
+  // menu in src-tauri/src/lib.rs for the other commented-out pieces.
+  // useEffect(() => {
+  //   invoke("set_widget_enabled", { enabled: settings.widgetEnabled }).catch(() => {});
+  // }, [settings.widgetEnabled]);
 
   useEffect(() => {
     for (const server of settings.mcpServers) {
@@ -297,7 +399,9 @@ function App() {
           createdAt: Date.now(),
         },
       ]);
-      if (p.conversation_id === activeId) setFilesPanelOpen(true);
+      if (p.conversation_id === activeId && !filesPanelClosedByUserRef.current) {
+        setFilesPanelOpen(true);
+      }
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -306,7 +410,8 @@ function App() {
 
   useEffect(() => {
     const apply = () => {
-      document.documentElement.classList.toggle("dark", resolveTheme(settings.theme) === "dark");
+      const resolved = resolveTheme(settings.theme);
+      document.documentElement.classList.toggle("dark", resolved === "dark");
     };
     apply();
     if (settings.theme !== "system") return;
@@ -314,6 +419,11 @@ function App() {
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [settings.theme]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("ui-clay", settings.uiStyle === "clay");
+    document.documentElement.classList.toggle("ui-glass", settings.uiStyle === "glass");
+  }, [settings.uiStyle]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("reduce-motion", settings.reduceMotion);
@@ -328,8 +438,20 @@ function App() {
   }, [folders]);
 
   useEffect(() => {
-    localStorage.setItem(TERMINAL_MINIMIZED_KEY, terminalMinimized ? "1" : "0");
-  }, [terminalMinimized]);
+    saveConversations(conversations);
+  }, [conversations]);
+
+  useEffect(() => {
+    saveOpenTabIds(openTabIds);
+  }, [openTabIds]);
+
+  useEffect(() => {
+    saveActiveId(activeId);
+  }, [activeId]);
+
+  useEffect(() => {
+    saveOnboarding(onboarding);
+  }, [onboarding]);
 
   useEffect(() => {
     document.documentElement.style.zoom = `${settings.uiScale}%`;
@@ -367,26 +489,26 @@ function App() {
 
   const openConversation = useCallback((id: string) => {
     setOpenTabIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-    setActiveId(id);
-  }, []);
+    openMain(id);
+  }, [openMain]);
 
   const handleNew = useCallback(() => {
     const c = makeConversation(`New chat ${conversations.length + 1}`);
     setConversations((prev) => [c, ...prev]);
     setOpenTabIds((prev) => [...prev, c.id]);
-    setActiveId(c.id);
+    openMain(c.id);
     track("new_chat_created");
-  }, [conversations.length]);
+  }, [conversations.length, openMain]);
 
   const handleNewInFolder = useCallback(
     (folderId: string) => {
       const c = { ...makeConversation(`New chat ${conversations.length + 1}`), folderId };
       setConversations((prev) => [c, ...prev]);
       setOpenTabIds((prev) => [...prev, c.id]);
-      setActiveId(c.id);
+      openMain(c.id);
       track("new_chat_created", { folder: true });
     },
-    [conversations.length],
+    [conversations.length, openMain],
   );
 
   const handleCreateFolder = useCallback((name: string) => {
@@ -492,8 +614,21 @@ function App() {
   //   );
   // }, []);
 
+  const handleStop = useCallback(
+    (id?: string) => {
+      const targetId = id ?? activeId;
+      if (!targetId) return;
+      const requestId = activeRequestIdsRef.current.get(targetId);
+      if (requestId) void stopChatMessage(requestId);
+    },
+    [activeId],
+  );
+
   const handleCloseTab = useCallback(
     (id: string) => {
+      if (conversations.find((c) => c.id === id)?.status === "running") {
+        handleStop(id);
+      }
       setOpenTabIds((prev) => {
         const next = prev.filter((t) => t !== id);
         if (activeId === id) {
@@ -502,7 +637,7 @@ function App() {
         return next;
       });
     },
-    [activeId],
+    [activeId, conversations, handleStop],
   );
 
   const handleClearConversations = useCallback(() => {
@@ -606,18 +741,41 @@ function App() {
           pushLocalExchange(raw, `Removed rule: "${target.text}"`);
           break;
         }
+        case "help": {
+          const listText = SLASH_COMMANDS.map((c) => `${c.cmd} — ${c.desc}`).join("\n");
+          pushLocalExchange(raw, listText);
+          break;
+        }
+        case "new": {
+          handleNew();
+          break;
+        }
+        case "rename": {
+          if (!command.title) {
+            pushLocalExchange(raw, "Usage: /rename <new title>");
+            break;
+          }
+          handleRenameConversation(activeId, command.title);
+          pushLocalExchange(raw, `Renamed chat to "${command.title}"`);
+          break;
+        }
+        case "export": {
+          handleExportData();
+          pushLocalExchange(raw, "Exported conversations.");
+          break;
+        }
         case "unknown": {
           pushLocalExchange(raw, `Unknown command: ${command.raw}`);
           break;
         }
       }
     },
-    [activeId, rules, pushLocalExchange],
+    [activeId, rules, pushLocalExchange, handleNew, handleRenameConversation, handleExportData],
   );
 
   const handleGoHome = useCallback(() => {
-    setActiveId(null);
-  }, []);
+    openMain(null);
+  }, [openMain]);
 
   const handleClearFileChanges = useCallback(() => {
     setFileChanges((prev) => prev.filter((f) => f.conversationId !== activeId));
@@ -644,6 +802,8 @@ function App() {
         return;
       }
 
+      markOnboarding("sentMessage");
+
       const userMessage: Message = {
         id: makeId(),
         role: "user",
@@ -660,15 +820,20 @@ function App() {
         targetId = c.id;
         setConversations((prev) => [c, ...prev]);
         setOpenTabIds((prev) => [...prev, c.id]);
-        setActiveId(c.id);
+        openMain(c.id);
       }
 
       const existing = conversations.find((c) => c.id === targetId) ?? null;
-      // Composer's `disabled` prop can lag a render behind (e.g. rapid double
-      // Enter), letting two sends fire for the same conversation before the
-      // first's request id lands in activeRequestIdsRef. Bail here so the
-      // second send can't overwrite the first's tracked request id.
-      if (existing?.status === "running") return;
+      // Composer's `disabled` prop, and `existing.status` read from this
+      // closure's `conversations`, can both lag a render behind (e.g. rapid
+      // double Enter) — two sends can fire off the *same* stale handleSend
+      // closure before either has caused a re-render. activeRequestIdsRef is
+      // a ref, so it's mutated and visible synchronously regardless of
+      // render timing; reserve the slot before anything async happens so the
+      // second call sees it and bails, instead of both proceeding and each
+      // appending their own user/assistant message pair to the conversation.
+      if (activeRequestIdsRef.current.has(targetId)) return;
+      activeRequestIdsRef.current.set(targetId, "pending");
       const isFirstMessage = (existing?.messages.length ?? 0) === 0;
       const title = isFirstMessage ? text.slice(0, 40) : (existing?.title ?? "New chat");
 
@@ -690,6 +855,7 @@ function App() {
           };
         }),
       );
+      filesPanelClosedByUserRef.current = false;
 
       if (isFirstMessage && session) {
         void generateTitle(text, session.access_token).then((aiTitle) => {
@@ -700,18 +866,22 @@ function App() {
         });
       }
 
+      // Keep the raw accumulated text untouched and re-strip it fresh on every
+      // chunk — stripping the already-stripped buffer in place would destroy
+      // an opening <think> tag that arrived in an earlier chunk before its
+      // closing tag arrives in a later one, leaving orphaned fragments visible.
+      let assistantRaw = "";
       let assistantText = "";
       const applyDelta = (content: string, replace = false) => {
-        assistantText = replace ? content : assistantText + content;
+        assistantRaw = replace ? content : assistantRaw + content;
+        assistantText = stripThinkTags(assistantRaw);
         setConversations((prev) =>
           prev.map((c) =>
             c.id === targetId
               ? {
                   ...c,
                   messages: c.messages.map((m) =>
-                    m.id === assistantId
-                      ? { ...m, content: replace ? content : m.content + content }
-                      : m,
+                    m.id === assistantId ? { ...m, content: assistantText } : m,
                   ),
                 }
               : c,
@@ -729,7 +899,6 @@ function App() {
         activeAgent?.systemPrompt.trim(),
         settings.customInstructions.trim(),
         rulesToPrompt(rules),
-        settings.chatMode === "plan" ? PLAN_MODE_INSTRUCTION : "",
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -746,6 +915,7 @@ function App() {
         setConversations((prev) =>
           prev.map((c) => (c.id === targetId ? { ...c, status: "done", updatedAt: Date.now() } : c)),
         );
+        activeRequestIdsRef.current.delete(targetId);
         return;
       }
       const outgoingModel = activeProvider ? activeProvider.model : settings.model;
@@ -773,24 +943,37 @@ function App() {
           },
           (requestId) => activeRequestIdsRef.current.set(targetId, requestId),
           activeProvider ? { baseUrl: activeProvider.baseUrl, apiKey: activeProvider.apiKey } : null,
-          (req: ToolApprovalRequest) => {
-            if (settings.chatMode === "skip-permissions") {
-              track("tool_action_reviewed", { tool: req.tool, approved: true, auto: true });
-              void respondToolApproval(req.approvalId, true);
-              return;
-            }
-            setToolApproval(req);
-          },
+          (req: ToolApprovalRequest) => setToolApproval(req),
           settings.reasoningEffort,
           existing?.worktreePath,
           isPro,
+          settings.chatMode,
         );
+        // A model can spend its whole reply inside <think>...</think> with
+        // nothing outside it — stripping then leaves an empty message that
+        // MessageBubble renders as nothing at all, silently, with no error.
+        // Fall back to the reasoning text itself rather than leaving the
+        // user staring at a bubble that never appeared.
+        if (!assistantText.trim() && assistantRaw.trim()) {
+          applyDelta(assistantRaw.replace(/<\/?think>/gi, "").trim(), true);
+        }
         if (settings.responseSound) playDoneSound();
         if (settings.notifyOnResponse) {
           void notifyResponse(title, assistantText.slice(0, 120) || "Response ready");
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        let message = err instanceof Error ? err.message : String(err);
+        // A 401 through the Rofiant-hosted proxy means the session token is
+        // dead (expired refresh token, revoked session) — auto-refresh in
+        // the auth effect already had its shot. Sign out so the next send
+        // hits the `!session` guard above and prompts a real re-login,
+        // instead of silently re-sending the same dead token forever. A 401
+        // from a user's own custom provider is a bad API key, not a Rofiant
+        // session problem, so leave that alone.
+        if (!activeProvider && /Provider API error \(401/.test(message)) {
+          message = "Your session expired. Please sign in again.";
+          void supabase.auth.signOut().then(() => setShowAuth(true));
+        }
         applyDelta(`${assistantText ? assistantText + "\n\n" : ""}⚠ ${message}`, true);
       } finally {
         activeRequestIdsRef.current.delete(targetId);
@@ -810,14 +993,8 @@ function App() {
         );
       }
     },
-    [activeId, settings, session, conversations, rules, handleCommand, isPro],
+    [activeId, settings, session, conversations, rules, handleCommand, isPro, openMain, markOnboarding],
   );
-
-  const handleStop = useCallback(() => {
-    if (!activeId) return;
-    const requestId = activeRequestIdsRef.current.get(activeId);
-    if (requestId) void stopChatMessage(requestId);
-  }, [activeId]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -836,10 +1013,10 @@ function App() {
           setCommandPaletteOpen(false);
         } else if (historyOpen) {
           e.preventDefault();
-          setHistoryOpen(false);
+          goBack();
         } else if (settingsOpen) {
           e.preventDefault();
-          setSettingsOpen(false);
+          goBack();
         }
         return;
       }
@@ -859,7 +1036,7 @@ function App() {
         setSearchTrigger((t) => t + 1);
       } else if (key === ",") {
         e.preventDefault();
-        setSettingsOpen(true);
+        openSettings();
       } else if (key === "p") {
         e.preventDefault();
         setCommandPaletteOpen((v) => !v);
@@ -868,7 +1045,7 @@ function App() {
         handleGoHome();
       } else if (key === "y") {
         e.preventDefault();
-        setHistoryOpen(true);
+        openHistory();
       } else if (key === "l") {
         e.preventDefault();
         document.getElementById("composer-input")?.focus();
@@ -879,18 +1056,18 @@ function App() {
         e.preventDefault();
         if (tabs.length > 1 && activeId) {
           const i = tabs.findIndex((t) => t.id === activeId);
-          setActiveId(tabs[(i + 1) % tabs.length].id);
+          openMain(tabs[(i + 1) % tabs.length].id);
         }
       } else if (key === "[" && e.shiftKey) {
         e.preventDefault();
         if (tabs.length > 1 && activeId) {
           const i = tabs.findIndex((t) => t.id === activeId);
-          setActiveId(tabs[(i - 1 + tabs.length) % tabs.length].id);
+          openMain(tabs[(i - 1 + tabs.length) % tabs.length].id);
         }
       } else if (/^[1-9]$/.test(key)) {
         e.preventDefault();
         const target = tabs[Number(key) - 1];
-        if (target) setActiveId(target.id);
+        if (target) openMain(target.id);
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -907,6 +1084,10 @@ function App() {
     commandPaletteOpen,
     historyOpen,
     settingsOpen,
+    goBack,
+    openSettings,
+    openHistory,
+    openMain,
   ]);
 
   const commandItems: CommandItem[] = [
@@ -930,8 +1111,7 @@ function App() {
       icon: Search,
       shortcut: modShortcut("⌘K"),
       onRun: () => {
-        setSettingsOpen(false);
-        setHistoryOpen(false);
+        openMain(activeId);
         setSidebarOpen(true);
         setSearchTrigger((t) => t + 1);
       },
@@ -949,14 +1129,14 @@ function App() {
       label: "Open settings",
       icon: SettingsIcon,
       shortcut: modShortcut("⌘,"),
-      onRun: () => setSettingsOpen(true),
+      onRun: openSettings,
     },
     {
       id: "open-history",
       label: "View changed files",
       icon: History,
       shortcut: modShortcut("⌘Y"),
-      onRun: () => setHistoryOpen(true),
+      onRun: openHistory,
     },
     ...(activeId
       ? [
@@ -1012,7 +1192,7 @@ function App() {
       <ChangeHistoryPage
         changes={fileChanges.filter((f) => f.conversationId === activeId)}
         sidebarOpen={historySidebarOpen}
-        onClose={() => setHistoryOpen(false)}
+        onClose={goBack}
         onClear={handleClearFileChanges}
       />
     );
@@ -1021,7 +1201,7 @@ function App() {
       <SettingsPage
         settings={settings}
         onChange={updateSettings}
-        onClose={() => setSettingsOpen(false)}
+        onClose={goBack}
         sidebarOpen={sidebarOpen}
         userEmail={session?.user.email ?? null}
         userAvatarUrl={session ? getUserAvatarUrl(session.user) : null}
@@ -1032,7 +1212,7 @@ function App() {
         plan={plan}
         isPro={isPro}
         onSignIn={() => {
-          setSettingsOpen(false);
+          openMain(activeId);
           setShowAuth(true);
         }}
         onSignOut={() => supabase.auth.signOut()}
@@ -1061,7 +1241,7 @@ function App() {
           onSelect={openConversation}
           onNew={handleNew}
           onHome={handleGoHome}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={openSettings}
           onRename={handleRenameConversation}
           onTogglePin={handleTogglePin}
           onDelete={handleDeleteConversation}
@@ -1097,14 +1277,19 @@ function App() {
           tabs={tabs}
           activeId={activeId}
           sidebarOpen={sidebarOpen}
-          onSelect={setActiveId}
+          onSelect={openConversation}
           onClose={handleCloseTab}
           onNew={handleNew}
           onRename={handleRenameConversation}
           filesPanelOpen={filesPanelOpen}
-          onToggleFilesPanel={() => setFilesPanelOpen((v) => !v)}
+          onToggleFilesPanel={() =>
+            setFilesPanelOpen((v) => {
+              filesPanelClosedByUserRef.current = v;
+              return !v;
+            })
+          }
           changedFilesCount={fileChanges.filter((f) => f.conversationId === activeId).length}
-          onOpenHistory={() => setHistoryOpen(true)}
+          onOpenHistory={openHistory}
         />
         <ChatPanel
           conversation={activeConversation}
@@ -1113,7 +1298,19 @@ function App() {
           onStop={handleStop}
           settings={settings}
           isPro={isPro}
-          onModelChange={(id) => updateSettings({ model: id })}
+          onModelChange={(id) => {
+            updateSettings({ model: id });
+            markOnboarding("pickedModel");
+          }}
+          onSelectLocalModel={(id, name) => {
+            const { customProviders, providerId } = upsertLocalModelProvider(
+              settings.customProviders,
+              id,
+              name,
+            );
+            updateSettings({ customProviders, model: customModelId(providerId) });
+            markOnboarding("pickedModel");
+          }}
           onEffortChange={(effort) => updateSettings({ reasoningEffort: effort })}
           onModeChange={(mode) => updateSettings({ chatMode: mode })}
           onAgentChange={(agentId) => updateSettings({ activeAgentId: agentId })}
@@ -1126,11 +1323,12 @@ function App() {
 
       <FileChangesPanel
         changes={fileChanges.filter((f) => f.conversationId === activeId)}
-        terminalMinimized={terminalMinimized}
-        onToggleTerminalMinimized={() => setTerminalMinimized((v) => !v)}
         terminalCwd={activeConversation?.worktreePath}
         open={filesPanelOpen}
-        onClose={() => setFilesPanelOpen(false)}
+        onClose={() => {
+          filesPanelClosedByUserRef.current = true;
+          setFilesPanelOpen(false);
+        }}
         onSaveChange={handleSaveFileChange}
       />
     </div>
@@ -1156,8 +1354,13 @@ function App() {
         onToggleSidebar={() =>
           historyOpen ? setHistorySidebarOpen((v) => !v) : setSidebarOpen((v) => !v)
         }
+        canGoBack={navigation.index > 0}
+        canGoForward={navigation.index < navigation.entries.length - 1}
+        onGoBack={goBack}
+        onGoForward={goForward}
         maximized={maximized}
         rounded={rounded}
+        hideNav={showAuth}
       />
       <CommandPalette
         open={commandPaletteOpen}
@@ -1194,6 +1397,12 @@ function App() {
       )}
       {availableUpdate && (
         <UpdateBanner update={availableUpdate} onDismiss={() => setAvailableUpdate(null)} />
+      )}
+      {!onboarding.dismissed && (
+        <GetStartedCard
+          state={onboarding}
+          onDismiss={() => setOnboarding((prev) => ({ ...prev, dismissed: true }))}
+        />
       )}
       <div className="flex-1 min-h-0">
         <Suspense fallback={<PageSpinner />}>{content}</Suspense>

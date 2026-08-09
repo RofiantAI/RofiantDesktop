@@ -55,7 +55,7 @@ export function GeneralSection({
           {userEmail ? (
             <button
               type="button"
-              onClick={() => void openUrl("https://rofiant.ca/account")}
+              onClick={() => void openUrl("https://www.rofiant.ca/dashboard")}
               className="flex items-center gap-1.5 h-7 px-3 rounded-md border border-border text-[12px] text-foreground-secondary hover:text-foreground hover:bg-background-tertiary transition-colors"
             >
               Open
@@ -197,6 +197,15 @@ export function GeneralSection({
             <Toggle checked={settings.minimizeToTray} onChange={(v) => onChange({ minimizeToTray: v })} />
           </div>
         </CardRow>
+        {/* Desktop widget disabled for now — see App.tsx and the tray menu
+            in src-tauri/src/lib.rs for the other commented-out pieces.
+        <CardRow
+          label="Desktop widget"
+          description="A small always-on-top bubble in the corner of your screen for quick chats"
+        >
+          <Toggle checked={settings.widgetEnabled} onChange={(v) => onChange({ widgetEnabled: v })} />
+        </CardRow>
+        */}
       </Card>
 
       {userEmail && (

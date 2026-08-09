@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Loader2 } from "lucide-react";
+import { Dotm3x3_20 } from "./ui/dotm-3x3-20";
 import type { Conversation } from "../types";
 import type { AppSettings } from "../lib/settings";
 import type { ChatMode } from "../lib/agents";
@@ -19,6 +19,7 @@ export function ChatPanel({
   settings,
   isPro,
   onModelChange,
+  onSelectLocalModel,
   onEffortChange,
   onModeChange,
   onAgentChange,
@@ -34,6 +35,7 @@ export function ChatPanel({
   settings: AppSettings;
   isPro: boolean;
   onModelChange: (id: string) => void;
+  onSelectLocalModel: (id: string, name: string) => void;
   onEffortChange: (effort: AppSettings["reasoningEffort"]) => void;
   onModeChange: (mode: ChatMode) => void;
   onAgentChange: (agentId: string | null) => void;
@@ -52,7 +54,8 @@ export function ChatPanel({
   if (!conversation) {
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="flex-1 flex items-center justify-center">
+        <div className="flex-1 flex flex-col items-center justify-center gap-4">
+          <img src="/grey.svg" alt="" className="w-12 h-12" />
           <p className="text-2xl text-foreground-secondary">What can I help with?</p>
         </div>
         <Composer
@@ -63,6 +66,7 @@ export function ChatPanel({
           model={settings.model}
           isPro={isPro}
           onModelChange={onModelChange}
+          onSelectLocalModel={onSelectLocalModel}
           effort={settings.reasoningEffort}
           onEffortChange={onEffortChange}
           spellcheck={settings.spellcheck}
@@ -97,7 +101,8 @@ export function ChatPanel({
     <div className="flex-1 flex flex-col min-h-0">
       <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
         {conversation.messages.length === 0 ? (
-          <div className="h-full flex items-center justify-center">
+          <div className="h-full flex flex-col items-center justify-center gap-4">
+            <img src="/grey.svg" alt="" className="w-12 h-12" />
             <p className="text-2xl text-foreground-secondary">What can I help with?</p>
           </div>
         ) : (
@@ -110,7 +115,7 @@ export function ChatPanel({
                   isStreaming &&
                   i === conversation.messages.length - 1 && (
                     <div className="flex items-center gap-1.5 text-xs text-foreground-muted mb-2">
-                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <Dotm3x3_20 size={14} dotSize={2} speed={1.2} colorPreset="grad-sunset" />
                       Working…
                     </div>
                   )}
@@ -138,6 +143,7 @@ export function ChatPanel({
         model={settings.model}
         isPro={isPro}
         onModelChange={onModelChange}
+        onSelectLocalModel={onSelectLocalModel}
         effort={settings.reasoningEffort}
         onEffortChange={onEffortChange}
         spellcheck={settings.spellcheck}

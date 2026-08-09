@@ -3,7 +3,8 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
-    "main"
+    "main",
+    "widget"
   ],
   "permissions": [
     "core:default",
@@ -17,10 +18,16 @@
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-set-focus",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
     "notification:default",
     "updater:default",
     "process:default",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "$HOME/.rofiant/skills/**" }]
+    },
     "dialog:default",
     "deep-link:default",
     "log:default"

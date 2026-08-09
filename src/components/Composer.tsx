@@ -15,11 +15,17 @@ import {
 } from "lucide-react";
 import {
   contextWindowForModel,
+  defaultModelForPlan,
   isVisionModel,
   VISION_MODEL_ID,
 } from "../lib/models";
 import type { EffortLevel } from "../lib/models";
-import type { CustomProvider } from "../lib/providers";
+import {
+  customModelId,
+  isCustomModelId,
+  type CustomProvider,
+} from "../lib/providers";
+import { OLLAMA_BASE_URL } from "../lib/ollama";
 import { readImageFile } from "../lib/image";
 import { SLASH_COMMANDS } from "../lib/commands";
 import { useVoiceRecording } from "../lib/useVoiceRecording";
@@ -119,6 +125,7 @@ export function Composer({
   model,
   isPro,
   onModelChange,
+  onSelectLocalModel,
   effort,
   onEffortChange,
   spellcheck,
@@ -141,6 +148,7 @@ export function Composer({
   model: string;
   isPro: boolean;
   onModelChange: (id: string) => void;
+  onSelectLocalModel: (id: string, name: string) => void;
   effort: EffortLevel;
   onEffortChange: (effort: EffortLevel) => void;
   spellcheck: boolean;
@@ -156,9 +164,12 @@ export function Composer({
   conversations: Conversation[];
   currentConversationId: string | null;
 }) {
+  const [modelSource, setModelSource] = useState<"cloud" | "local">("cloud");
   const [value, setValue] = useState("");
+  const [commandMenuDismissed, setCommandMenuDismissed] = useState(false);
   const [image, setImage] = useState<string | null>(null);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [commandIndex, setCommandIndex] = useState(0);
   const [mentionMatch, setMentionMatch] = useState<MentionMatch | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -176,6 +187,7 @@ export function Composer({
     voiceError,
     setVoiceError,
     toggleRecording,
+    levels,
   } = useVoiceRecording(accessToken, (text) => {
     setValue((v) => (v ? `${v} ${text}` : text));
     ref.current?.focus();
@@ -188,10 +200,12 @@ export function Composer({
     : [];
   const showCommandMenu =
     commandMatches.length > 0 &&
+    !commandMenuDismissed &&
     !(commandMatches.length === 1 && commandMatches[0].cmd === value);
 
   useEffect(() => {
     setCommandIndex(0);
+    setCommandMenuDismissed(false);
   }, [value]);
 
   function applyCommand(cmd: string) {
@@ -381,7 +395,7 @@ export function Composer({
 
   return (
     <div className="shrink-0 px-6 pb-5 pt-1">
-      <div className="max-w-[720px] mx-auto relative">
+      <div className="max-w-[640px] mx-auto relative">
         {showCommandMenu && (
           <div className="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-card shadow-lg py-1 z-10 overflow-hidden">
             {commandMatches.map((c, i) => (
@@ -459,7 +473,25 @@ export function Composer({
               </div>
             );
           })()}
-        <div className="rounded-xl border border-border bg-card focus-within:border-border-light transition-colors relative">
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDraggingFile(true);
+          }}
+          onDragLeave={(e) => {
+            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+            setIsDraggingFile(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDraggingFile(false);
+            const file = e.dataTransfer.files?.[0];
+            if (file) void attachFile(file);
+          }}
+          className={`rounded-[28px] border bg-card focus-within:border-border-light transition-colors relative ${
+            isDraggingFile ? "border-accent-primary" : "border-border"
+          }`}
+        >
           {!value && (
             <div className="pointer-events-none absolute top-2 right-3 flex items-center gap-0.5 text-[11px] text-foreground-muted">
               <Command className="w-3 h-3" />
@@ -514,7 +546,7 @@ export function Composer({
               </button>
             </div>
           )}
-          <div className="flex items-end gap-2 px-3 pt-2.5">
+          <div className="flex items-end gap-2 px-4 pt-3">
             <input
               ref={fileInputRef}
               type="file"
@@ -522,6 +554,18 @@ export function Composer({
               className="hidden"
               onChange={handleFileChange}
             />
+            <div className="flex-1 relative min-w-0">
+            {isRecording && (
+              <div className="absolute inset-0 flex items-center gap-[3px] py-1 pointer-events-none">
+                {levels.map((level, i) => (
+                  <span
+                    key={i}
+                    className="flex-1 max-w-[3px] rounded-full bg-red-500"
+                    style={{ height: `${Math.max(10, level * 100)}%` }}
+                  />
+                ))}
+              </div>
+            )}
             <textarea
               id="composer-input"
               ref={ref}
@@ -562,7 +606,7 @@ export function Composer({
                   }
                   if (e.key === "Escape") {
                     e.preventDefault();
-                    setValue("");
+                    setCommandMenuDismissed(true);
                     return;
                   }
                 } else if (showMentionMenu) {
@@ -604,16 +648,21 @@ export function Composer({
               spellCheck={spellcheck}
               rows={1}
               placeholder="Ask anything, @ to mention, type / for commands"
-              className="flex-1 resize-none bg-transparent text-[14px] text-foreground placeholder:text-foreground-muted outline-none py-1 indent-[2px] max-h-40"
+              className={`w-full resize-none bg-transparent text-[14px] text-foreground placeholder:text-foreground-muted outline-none py-1 indent-[2px] max-h-40 ${
+                isRecording ? "invisible" : ""
+              }`}
             />
+            </div>
           </div>
-          <div className="flex items-center justify-between px-3 pb-2 pt-1">
+          <div className="flex items-center justify-between px-4 pb-3 pt-1">
             <div className="flex items-center gap-1.5 min-w-0">
               <ModelPicker
                 model={model}
                 isPro={isPro}
                 customProviders={customProviders}
+                source={modelSource}
                 onSelectModel={selectModel}
+                onSelectLocalModel={onSelectLocalModel}
               />
               <EffortMenu
                 effort={effort}
@@ -629,11 +678,13 @@ export function Composer({
               />
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              <ContextRing model={model} usage={contextUsage} />
+              {contextUsage && (
+                <ContextRing model={model} usage={contextUsage} />
+              )}
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center justify-center w-6 h-6 rounded-sm text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors shrink-0"
+                className="flex items-center justify-center w-6 h-6 rounded-full text-foreground-muted hover:text-foreground hover:bg-background-tertiary transition-colors shrink-0"
                 title="Attach"
                 aria-label="Attach image"
               >
@@ -645,9 +696,9 @@ export function Composer({
                 disabled={isTranscribing}
                 title={isRecording ? "Stop recording" : "Speak"}
                 aria-label={isRecording ? "Stop recording" : "Speak"}
-                className={`flex items-center justify-center w-6 h-6 rounded-sm transition-colors shrink-0 ${
+                className={`flex items-center justify-center w-6 h-6 rounded-full transition-colors shrink-0 ${
                   isRecording
-                    ? "text-red-500 bg-red-500/10 animate-pulse"
+                    ? "text-red-500 bg-red-500/10"
                     : "text-foreground-muted hover:text-foreground hover:bg-background-tertiary disabled:text-foreground-muted"
                 }`}
               >
@@ -663,7 +714,7 @@ export function Composer({
                   onClick={onStop}
                   title="Stop generating"
                   aria-label="Stop generating"
-                  className="flex items-center justify-center w-6 h-6 rounded-sm bg-foreground text-background transition-colors shrink-0"
+                  className="flex items-center justify-center w-6 h-6 rounded-full bg-foreground text-background transition-colors shrink-0"
                 >
                   <Square className="w-2.5 h-2.5 fill-current" />
                 </button>
@@ -680,7 +731,7 @@ export function Composer({
                   }
                   title="Send"
                   aria-label="Send message"
-                  className="flex items-center justify-center w-6 h-6 rounded-sm bg-foreground text-background disabled:bg-background-tertiary disabled:text-foreground-muted transition-colors shrink-0"
+                  className="flex items-center justify-center w-6 h-6 rounded-full bg-foreground text-background disabled:bg-background-tertiary disabled:text-foreground-muted transition-colors shrink-0"
                 >
                   {resolvingMentions ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -691,6 +742,42 @@ export function Composer({
               )}
             </div>
           </div>
+        </div>
+        <div className="flex items-center gap-2.5 mt-1.5 px-1 text-[11px]">
+          <button
+            type="button"
+            onClick={() => {
+              setModelSource("cloud");
+              if (isCustomModelId(model))
+                onModelChange(defaultModelForPlan(isPro));
+            }}
+            className={
+              modelSource === "cloud"
+                ? "text-foreground font-medium"
+                : "text-foreground-muted hover:text-foreground transition-colors"
+            }
+          >
+            Cloud
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setModelSource("local");
+              if (!isCustomModelId(model)) {
+                const lastLocal = customProviders
+                  .filter((p) => p.baseUrl === OLLAMA_BASE_URL)
+                  .at(-1);
+                if (lastLocal) onModelChange(customModelId(lastLocal.id));
+              }
+            }}
+            className={
+              modelSource === "local"
+                ? "text-foreground font-medium"
+                : "text-foreground-muted hover:text-foreground transition-colors"
+            }
+          >
+            Local
+          </button>
         </div>
         <p className="text-center text-[11px] text-foreground-muted mt-2">
           AI can make mistakes. Double-check important responses.

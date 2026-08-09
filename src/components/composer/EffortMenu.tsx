@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Gauge } from "lucide-react";
+import { ChevronDown, Gauge } from "lucide-react";
 import { EFFORT_LEVELS, supportsEffort, type EffortLevel } from "../../lib/models";
 
 const EFFORT_LABELS: Record<EffortLevel, string> = {
@@ -81,31 +81,34 @@ export function EffortMenu({
         <ChevronDown className="w-3 h-3" />
       </button>
       {open && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 rounded-lg border border-border bg-card shadow-lg py-1 px-0.5 z-10">
-          {EFFORT_LEVELS.map((level) => (
-            <button
-              key={level}
-              type="button"
-              onClick={() => {
-                onEffortChange(level);
-                setOpen(false);
-              }}
-              className="w-[calc(100%-2px)] mx-px flex items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background-tertiary rounded-md"
-            >
-              <span className="flex items-center gap-2">
-                <Gauge className="w-3.5 h-3.5 text-foreground-muted" />
-                <span>
-                  <span className="block text-[13px] text-foreground font-medium leading-tight">
-                    {EFFORT_LABELS[level]}
-                  </span>
-                  <span className="block text-[11px] text-foreground-muted leading-tight">
-                    {EFFORT_DESCRIPTIONS[level]}
-                  </span>
-                </span>
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 rounded-lg border border-border bg-card shadow-lg p-3 z-10">
+          <div className="text-[13px] text-foreground font-medium leading-tight mb-0.5">
+            {EFFORT_LABELS[effort]}
+          </div>
+          <div className="text-[11px] text-foreground-muted leading-tight mb-2.5">
+            {EFFORT_DESCRIPTIONS[effort]}
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={EFFORT_LEVELS.length - 1}
+            step={1}
+            value={EFFORT_LEVELS.indexOf(effort)}
+            onChange={(e) => onEffortChange(EFFORT_LEVELS[Number(e.target.value)])}
+            className="w-full accent-accent-primary cursor-pointer"
+          />
+          <div className="flex justify-between mt-1">
+            {EFFORT_LEVELS.map((level) => (
+              <span
+                key={level}
+                className={`text-[10px] ${
+                  effort === level ? "text-foreground font-medium" : "text-foreground-muted"
+                }`}
+              >
+                {EFFORT_LABELS[level]}
               </span>
-              {effort === level && <Check className="w-3.5 h-3.5 text-accent-primary shrink-0" />}
-            </button>
-          ))}
+            ))}
+          </div>
         </div>
       )}
     </div>

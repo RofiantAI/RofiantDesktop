@@ -10,6 +10,7 @@ import {
   Database,
   BarChart3,
   ChevronDown,
+  Sparkles,
 } from "lucide-react";
 import { customProviderIdFromModel } from "../../lib/providers";
 import type { AppSettings } from "../../lib/settings";
@@ -19,6 +20,7 @@ export type Section =
   | "providers"
   | "models"
   | "agents"
+  | "skills"
   | "mcp"
   | "appearance"
   | "profile"
@@ -37,6 +39,7 @@ export const SECTION_GROUPS: {
       { id: "providers", label: "Providers", icon: Plug },
       { id: "models", label: "Models", icon: Box },
       { id: "agents", label: "Agents", icon: Users },
+      { id: "skills", label: "Skills", icon: Sparkles },
       { id: "mcp", label: "MCP Servers", icon: Cable },
     ],
   },

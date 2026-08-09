@@ -92,6 +92,7 @@ export async function sendChatMessage(
   effort?: string | null,
   cwd?: string | null,
   isPro?: boolean,
+  approvalMode?: string,
 ): Promise<void> {
   const requestId = crypto.randomUUID();
   onRequestId?.(requestId);
@@ -146,6 +147,7 @@ export async function sendChatMessage(
         effort: effort ?? null,
         cwd: cwd ?? null,
         isPro: isPro ?? false,
+        approvalMode: approvalMode ?? "ask",
       }).catch((err) => {
         cleanup();
         reject(err instanceof Error ? err : new Error(String(err)));

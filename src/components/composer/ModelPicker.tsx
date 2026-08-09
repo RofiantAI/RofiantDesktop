@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Cloud, Lock, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, Cloud, HardDrive, Lock, TriangleAlert } from "lucide-react";
 import { ALL_MODELS, DMC_MODELS, isLogfareModel, isProModel } from "../../lib/models";
 import { customModelId, type CustomProvider } from "../../lib/providers";
+import { EASY_LOCAL_MODELS, listInstalledOllamaModels, OLLAMA_BASE_URL } from "../../lib/ollama";
 import { getKiroAutoModel } from "../../lib/groq";
 
 function SectionLabel({ children }: { children: string }) {
@@ -57,16 +58,21 @@ export function ModelPicker({
   model,
   isPro,
   customProviders,
+  source,
   onSelectModel,
+  onSelectLocalModel,
 }: {
   model: string;
   isPro: boolean;
   customProviders: CustomProvider[];
+  source: "cloud" | "local";
   onSelectModel: (id: string) => void;
+  onSelectLocalModel: (id: string, name: string) => void;
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [logfareTooltipRect, setLogfareTooltipRect] = useState<DOMRect | null>(null);
   const [kiroAutoModel, setKiroAutoModel] = useState<string | null>(null);
+  const [installedLocalModels, setInstalledLocalModels] = useState<string[] | null>(null);
   const modelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -90,36 +96,49 @@ export function ModelPicker({
       .catch(() => setKiroAutoModel(null));
   }, [modelOpen]);
 
+  useEffect(() => {
+    if (!modelOpen || source !== "local") return;
+    listInstalledOllamaModels()
+      .then(setInstalledLocalModels)
+      .catch(() => setInstalledLocalModels(null));
+  }, [modelOpen, source]);
+
   const activeModel = ALL_MODELS.find((m) => m.id === model) ?? DMC_MODELS.find((m) => m.id === model);
   const activeCustomProvider = customProviders.find((p) => customModelId(p.id) === model);
 
   return (
-    <div className="relative" ref={modelRef}>
+    <div className="relative min-w-0" ref={modelRef}>
       <button
         type="button"
         onClick={() => setModelOpen((v) => !v)}
-        className="flex items-center gap-1 text-[12px] text-foreground-muted hover:text-foreground transition-colors"
+        className="flex items-center gap-1 min-w-0 max-w-full text-[12px] text-foreground-muted hover:text-foreground transition-colors"
       >
-        {activeModel?.name ?? activeCustomProvider?.name ?? "Select model"}
-        <ChevronDown className="w-3 h-3" />
+        <span className="truncate">
+          {activeModel?.name ?? activeCustomProvider?.name ?? "Select model"}
+        </span>
+        <ChevronDown className="w-3 h-3 shrink-0" />
       </button>
-      {modelOpen && (
+      {modelOpen && source === "cloud" && (
         <div className="absolute bottom-full left-0 mb-2 w-72 max-h-[70vh] overflow-y-auto rounded-lg border border-border bg-card shadow-lg py-1 z-10">
-          <SectionLabel>DMC</SectionLabel>
-          {DMC_MODELS.map((m) => (
-            <PickerRow
-              key={m.id}
-              icon={Cloud}
-              name={m.name}
-              subtitle="via DMC Gateway"
-              active={model === m.id}
-              onClick={() => {
-                onSelectModel(m.id);
-                setModelOpen(false);
-              }}
-            />
-          ))}
-          <div className="my-1 border-t border-border" />
+          {DMC_MODELS.length > 0 && (
+            <>
+              <SectionLabel>DMC</SectionLabel>
+              {DMC_MODELS.map((m) => (
+                <PickerRow
+                  key={m.id}
+                  icon={Cloud}
+                  name={m.name}
+                  subtitle="via DMC Gateway"
+                  active={model === m.id}
+                  onClick={() => {
+                    onSelectModel(m.id);
+                    setModelOpen(false);
+                  }}
+                />
+              ))}
+              <div className="my-1 border-t border-border" />
+            </>
+          )}
           <SectionLabel>Cloud models</SectionLabel>
           {ALL_MODELS.map((m) => {
             const locked = !isPro && isProModel(m.id);
@@ -161,6 +180,41 @@ export function ModelPicker({
               />
             );
           })}
+        </div>
+      )}
+      {modelOpen && source === "local" && (
+        <div className="absolute bottom-full left-0 mb-2 w-72 max-h-[70vh] overflow-y-auto rounded-lg border border-border bg-card shadow-lg py-1 z-10">
+          <SectionLabel>Local models</SectionLabel>
+          {installedLocalModels === null ? (
+            <div className="px-3 py-2 text-[12px] text-foreground-muted">
+              Can't reach Ollama. Is it running?
+            </div>
+          ) : installedLocalModels.length === 0 ? (
+            <div className="px-3 py-2 text-[12px] text-foreground-muted">
+              No local models installed. Add one in Settings → Models.
+            </div>
+          ) : (
+            installedLocalModels.map((modelId) => {
+              const name = EASY_LOCAL_MODELS.find((m) => m.id === modelId)?.name ?? modelId;
+              const provider = customProviders.find(
+                (p) => p.baseUrl === OLLAMA_BASE_URL && p.model === modelId,
+              );
+              const active = provider ? model === customModelId(provider.id) : false;
+              return (
+                <PickerRow
+                  key={modelId}
+                  icon={HardDrive}
+                  name={name}
+                  subtitle={modelId}
+                  active={active}
+                  onClick={() => {
+                    onSelectLocalModel(modelId, name);
+                    setModelOpen(false);
+                  }}
+                />
+              );
+            })
+          )}
         </div>
       )}
       {logfareTooltipRect && (

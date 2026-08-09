@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{oneshot, watch};
@@ -32,9 +32,119 @@ struct ToolApprovals(Mutex<HashMap<String, oneshot::Sender<bool>>>);
 #[derive(Default)]
 struct MinimizeToTray(AtomicBool);
 
+// The JS `@tauri-apps/api` has no devtools binding — opening them has to go
+// through the Rust webview handle. `open_devtools` needs the "devtools"
+// Cargo feature in release builds, but is always available in dev builds,
+// which is the only place the browser panel's inspect button matters.
+#[tauri::command]
+fn open_devtools(window: tauri::WebviewWindow) {
+    #[cfg(debug_assertions)]
+    window.open_devtools();
+}
+
+// A custom docked inspector (rather than the native devtools window) needs
+// to inject a picker script into the previewed page — tried it via a
+// fetch-and-inject-into-srcdoc proxy, but srcdoc documents inherit the
+// app's CSP (script-src 'self'), which blocks both our injected script and
+// the target page's own scripts. Confirmed empirically (Chromium test with
+// the same CSP: inline script in a sandboxed srcdoc iframe was rejected by
+// the policy). Loosening the app-wide CSP to work around it would widen the
+// whole app's XSS surface for a feature that'd still break any JS-heavy
+// preview — not a trade worth making. Left out; `open_devtools` (native
+// inspector) covers element inspection without this problem.
+
 #[tauri::command]
 fn set_minimize_to_tray(state: State<MinimizeToTray>, enabled: bool) {
     state.0.store(enabled, Ordering::Relaxed);
+}
+
+const WIDGET_LABEL: &str = "widget";
+const WIDGET_COLLAPSED_SIZE: f64 = 56.0;
+const WIDGET_MARGIN: f64 = 24.0;
+
+// Bottom-right corner of the primary monitor's work area, in logical pixels.
+// primary_monitor() is unreliable on some platforms (returns None), so fall
+// back to the first available monitor before giving up on a fixed guess.
+fn widget_collapsed_position(app: &AppHandle) -> (f64, f64) {
+    let monitor = app.primary_monitor().ok().flatten().or_else(|| {
+        app.available_monitors().ok().and_then(|monitors| monitors.into_iter().next())
+    });
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let size = monitor.size().to_logical::<f64>(scale);
+        (
+            size.width - WIDGET_COLLAPSED_SIZE - WIDGET_MARGIN,
+            size.height - WIDGET_COLLAPSED_SIZE - WIDGET_MARGIN,
+        )
+    } else {
+        (960.0, 600.0)
+    }
+}
+
+fn create_widget_window(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window(WIDGET_LABEL).is_some() {
+        return Ok(());
+    }
+    // Monitor enumeration can come back empty this early (e.g. right as the
+    // main window's frontend boots and calls set_widget_enabled), before the
+    // window server has anything to report. Build with a best-effort
+    // position, then correct it once the window itself exists and monitor
+    // info is reliably available.
+    let (x, y) = widget_collapsed_position(app);
+    let window = WebviewWindowBuilder::new(app, WIDGET_LABEL, WebviewUrl::App("index.html".into()))
+        .title("Rofiant")
+        .inner_size(WIDGET_COLLAPSED_SIZE, WIDGET_COLLAPSED_SIZE)
+        .position(x, y)
+        .decorations(false)
+        .transparent(true)
+        .shadow(true)
+        .skip_taskbar(true)
+        .visible(true)
+        .build()?;
+
+    let (x, y) = widget_collapsed_position(app);
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+
+    Ok(())
+}
+
+// (x, y, width, height) in logical pixels for the widget's collapsed or
+// expanded state, anchored so the bottom-right corner never moves.
+fn widget_bounds(app: &AppHandle, expanded: bool) -> (f64, f64, f64, f64) {
+    let (collapsed_x, collapsed_y) = widget_collapsed_position(app);
+    let br_x = collapsed_x + WIDGET_COLLAPSED_SIZE;
+    let br_y = collapsed_y + WIDGET_COLLAPSED_SIZE;
+    if expanded {
+        let (w, h) = (360.0, 480.0);
+        (br_x - w, br_y - h, w, h)
+    } else {
+        (collapsed_x, collapsed_y, WIDGET_COLLAPSED_SIZE, WIDGET_COLLAPSED_SIZE)
+    }
+}
+
+#[tauri::command]
+fn set_widget_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        create_widget_window(&app).map_err(|e| e.to_string())?;
+    } else if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_widget_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(WIDGET_LABEL) else {
+        return Ok(());
+    };
+    let (x, y, w, h) = widget_bounds(&app, expanded);
+    window
+        .set_size(LogicalSize::new(w, h))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_position(LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,6 +495,118 @@ fn read_file_for_mention(path: String) -> String {
 #[tauri::command]
 fn write_file_content(path: String, content: String) -> Result<(), String> {
     tool_write_file(&path, &content, &PathBuf::from(home_dir())).map(|_| ())
+}
+
+/// Skills are markdown files the user drops in `~/.rofiant/skills`, same
+/// convention as Claude Code and other AI CLIs: a `name` + `description`
+/// frontmatter pair is always visible to the model (see `skills_prompt`),
+/// and the full body is only loaded when the model `read_file`s the path —
+/// no dedicated "run skill" tool needed since read_file already exists.
+fn skills_dir() -> PathBuf {
+    PathBuf::from(home_dir()).join(".rofiant").join("skills")
+}
+
+struct SkillMeta {
+    name: String,
+    description: String,
+    path: PathBuf,
+}
+
+/// Hand-rolled parse of a `---\nname: ...\ndescription: ...\n---` frontmatter
+/// block. Only two flat string fields are needed, so pulling in a YAML crate
+/// for this would be pure overhead.
+fn parse_skill_frontmatter(content: &str) -> Option<(String, String)> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    let mut name = None;
+    let mut description = None;
+    for line in lines.by_ref() {
+        if line.trim() == "---" {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("name:") {
+            name = Some(rest.trim().trim_matches('"').to_string());
+        } else if let Some(rest) = line.strip_prefix("description:") {
+            description = Some(rest.trim().trim_matches('"').to_string());
+        }
+    }
+    Some((name?, description?))
+}
+
+fn scan_skills() -> Vec<SkillMeta> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(skills_dir()) else {
+        return out;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some((name, description)) = parse_skill_frontmatter(&content) {
+            out.push(SkillMeta { name, description, path });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Appended to the system prompt so the model always sees what skills exist
+/// without paying for their full content on every turn.
+fn skills_prompt() -> String {
+    let skills = scan_skills();
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\n\nSkills available — each is a markdown file with detailed instructions for a specific \
+task. read_file its path first when a request matches one, then follow the instructions inside \
+before doing the task:\n",
+    );
+    for skill in &skills {
+        s.push_str(&format!("- {}: {} ({})\n", skill.name, skill.description, skill.path.display()));
+    }
+    s
+}
+
+#[derive(Serialize)]
+struct SkillInfo {
+    name: String,
+    description: String,
+    path: String,
+}
+
+#[tauri::command]
+fn list_skills() -> Vec<SkillInfo> {
+    scan_skills()
+        .into_iter()
+        .map(|s| SkillInfo { name: s.name, description: s.description, path: s.path.display().to_string() })
+        .collect()
+}
+
+/// Resolves `~/.rofiant/skills` to a real absolute path and makes sure it
+/// exists — `openPath`/`revealItemInDir` on the frontend don't expand `~`
+/// and error on a missing directory, so the frontend always goes through
+/// this instead of hardcoding the tilde path.
+#[tauri::command]
+fn skills_dir_path() -> Result<String, String> {
+    let dir = skills_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Error creating {}: {}", dir.display(), e))?;
+    Ok(dir.display().to_string())
+}
+
+#[tauri::command]
+fn delete_skill(path: String) -> Result<(), String> {
+    let file = PathBuf::from(&path);
+    if file.parent() != Some(skills_dir().as_path()) {
+        return Err("Refusing to delete a file outside the skills folder".to_string());
+    }
+    std::fs::remove_file(&file).map_err(|e| format!("Error deleting {}: {}", file.display(), e))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1181,7 +1403,9 @@ screenshot via run_command (scrot, import, etc.) or by piping take_screenshot's 
 write_file. Use tools proactively whenever they would help \
 answer a request — but a plain greeting or short reply like \"hi\" or \"test\" is not a request for \
 anything on the user's computer, so don't call a tool unless the message actually asks for something \
-a tool is needed for.{search_instruction} \
+a tool is needed for. Never say an action is happening, in progress, or done unless you have actually \
+called the tool and are reporting its real result — do not narrate progress, promise to do something \
+\"now\", or claim success before the tool call, since nothing runs until you call it.{search_instruction} \
 Never claim you lack access to the file system, the terminal, the clipboard, \
 running processes, or the screen — you have it. Act like a normal, capable assistant: just do the \
 task. Only pause to ask before something destructive or irreversible (deleting data, killing an \
@@ -1220,6 +1444,7 @@ async fn send_chat(
     effort: Option<String>,
     cwd: Option<String>,
     is_pro: Option<bool>,
+    approval_mode: Option<String>,
 ) -> Result<(), String> {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     cancellations.0.lock().unwrap().insert(request_id.clone(), cancel_tx);
@@ -1235,6 +1460,7 @@ async fn send_chat(
         effort,
         cwd,
         is_pro.unwrap_or(false),
+        approval_mode.unwrap_or_else(|| "ask".to_string()),
         cancel_rx,
     )
     .await;
@@ -1294,6 +1520,47 @@ fn tool_needs_approval(name: &str) -> bool {
             name,
             "write_file" | "edit_file" | "run_command" | "kill_process" | "open_app" | "save_screenshot"
         )
+}
+
+/// Lexically resolves `.`/`..` without touching the filesystem — the target
+/// of `write_file`/`edit_file` may not exist yet, so `fs::canonicalize` isn't
+/// an option here.
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn path_is_inside(path: &std::path::Path, base: &std::path::Path) -> bool {
+    normalize_path(path).starts_with(normalize_path(base))
+}
+
+/// Whether this tool call should actually pause and wait for the user, given
+/// the chosen approval mode. `tool_needs_approval` is the ceiling — read-only
+/// tools never ask regardless of mode.
+fn tool_requires_approval(mode: &str, name: &str, args: &Value, base: &std::path::Path) -> bool {
+    if !tool_needs_approval(name) {
+        return false;
+    }
+    match mode {
+        "full-access" => false,
+        "approve-for-me" => match name {
+            "write_file" | "edit_file" => {
+                let path = args["path"].as_str().unwrap_or(".");
+                !path_is_inside(&resolve_path(path, base), base)
+            }
+            _ => true,
+        },
+        _ => true,
+    }
 }
 
 fn tool_approval_summary(tool: &str, args: &Value) -> String {
@@ -1562,6 +1829,7 @@ async fn run_agent(
     effort: Option<String>,
     cwd: Option<String>,
     is_pro: bool,
+    approval_mode: String,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<(), String> {
     // The active conversation's worktree when one is attached, or home
@@ -1593,6 +1861,7 @@ async fn run_agent(
     // plan-mode instruction) into the one system message instead of
     // sending them as separate entries.
     let mut system_content = system_prompt(&base, is_pro);
+    system_content.push_str(&skills_prompt());
     let mut rest: Vec<ChatMessage> = Vec::with_capacity(messages.len());
     for m in messages {
         if m.role == "system" && m.image_data_url.is_none() {
@@ -1878,7 +2147,7 @@ async fn run_agent(
 
             let mut screenshot_data_url: Option<String> = None;
 
-            let approved = if tool_needs_approval(name) {
+            let approved = if tool_requires_approval(&approval_mode, name, &args, &base) {
                 request_tool_approval(app, request_id, &call_id, name, &args, &mut cancel_rx).await?
             } else {
                 true
@@ -2517,6 +2786,10 @@ pub fn run() {
             }
 
             let show_i = tauri::menu::MenuItem::with_id(app, "show", "Show Rofiant", true, None::<&str>)?;
+            // Desktop widget disabled for now — see App.tsx and
+            // GeneralSection.tsx for the other commented-out pieces.
+            // let widget_i =
+            //     tauri::menu::MenuItem::with_id(app, "toggle_widget", "Toggle Desktop Widget", true, None::<&str>)?;
             let quit_i = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let tray_menu = tauri::menu::Menu::with_items(app, &[&show_i, &quit_i])?;
 
@@ -2531,6 +2804,13 @@ pub fn run() {
                             let _ = window.set_focus();
                         }
                     }
+                    // "toggle_widget" => {
+                    //     if let Some(window) = app.get_webview_window(WIDGET_LABEL) {
+                    //         let _ = window.close();
+                    //     } else {
+                    //         let _ = create_widget_window(app);
+                    //     }
+                    // }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -2553,6 +2833,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            open_devtools,
             send_chat,
             stop_chat,
             respond_tool_approval,
@@ -2565,10 +2846,15 @@ pub fn run() {
             mcp_connect,
             mcp_disconnect,
             set_minimize_to_tray,
+            set_widget_enabled,
+            set_widget_expanded,
             get_kiro_auto_model,
             list_dir_entries,
             read_file_for_mention,
             write_file_content,
+            list_skills,
+            skills_dir_path,
+            delete_skill,
             git_worktree_attach,
             git_worktree_remove,
             pty_spawn,
@@ -2622,6 +2908,48 @@ mod fs_tool_tests {
     #[test]
     fn resolve_path_expands_tilde_prefix() {
         assert_eq!(resolve_path("~/foo/bar", &home_base()), PathBuf::from(home_dir()).join("foo/bar"));
+    }
+
+    #[test]
+    fn approve_for_me_allows_writes_inside_base() {
+        let base = PathBuf::from("/tmp/some-worktree");
+        let args = json!({ "path": "src/index.ts" });
+        assert!(!tool_requires_approval("approve-for-me", "write_file", &args, &base));
+    }
+
+    #[test]
+    fn approve_for_me_still_asks_for_writes_outside_base() {
+        let base = PathBuf::from("/tmp/some-worktree");
+        let args = json!({ "path": "/etc/hosts" });
+        assert!(tool_requires_approval("approve-for-me", "write_file", &args, &base));
+    }
+
+    #[test]
+    fn approve_for_me_still_asks_for_writes_that_escape_base_via_dotdot() {
+        let base = PathBuf::from("/tmp/some-worktree");
+        let args = json!({ "path": "../../etc/passwd" });
+        assert!(tool_requires_approval("approve-for-me", "write_file", &args, &base));
+    }
+
+    #[test]
+    fn approve_for_me_still_asks_for_run_command() {
+        let base = PathBuf::from("/tmp/some-worktree");
+        let args = json!({ "command": "rm -rf /" });
+        assert!(tool_requires_approval("approve-for-me", "run_command", &args, &base));
+    }
+
+    #[test]
+    fn full_access_never_asks() {
+        let base = PathBuf::from("/tmp/some-worktree");
+        let args = json!({ "command": "anything" });
+        assert!(!tool_requires_approval("full-access", "run_command", &args, &base));
+    }
+
+    #[test]
+    fn ask_mode_always_asks_for_gated_tools() {
+        let base = PathBuf::from("/tmp/some-worktree");
+        let args = json!({ "path": "src/index.ts" });
+        assert!(tool_requires_approval("ask", "write_file", &args, &base));
     }
 
     #[test]

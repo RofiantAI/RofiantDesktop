@@ -7,6 +7,8 @@ import {
   X,
   PanelLeft,
   PanelLeftClose,
+  ArrowLeft,
+  ArrowRight,
 } from "lucide-react";
 import { isWindows, isMac } from "../lib/platform";
 
@@ -66,13 +68,23 @@ function MacTrafficLights() {
 export function TitleBar({
   sidebarOpen,
   onToggleSidebar,
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
   maximized,
   rounded,
+  hideNav,
 }: {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  onGoBack: () => void;
+  onGoForward: () => void;
   maximized: boolean;
   rounded: boolean;
+  hideNav?: boolean;
 }) {
   return (
     <div
@@ -91,32 +103,45 @@ export function TitleBar({
         data-tauri-drag-region
         className="flex-1 h-full flex items-center px-3 gap-3"
       >
-        <div className="flex items-center gap-1.5">
-          <img
-            src="/app-icon.svg"
-            alt=""
-            className="h-4 w-4 rounded-[5px] shrink-0 pointer-events-none"
-          />
-          <span className="text-[13px] font-medium text-foreground tracking-tight pointer-events-none">
-            Rofiant
-          </span>
-          {/* <span className="px-1 py-px rounded text-[9px] font-semibold uppercase tracking-wider leading-none text-foreground-muted bg-background-tertiary border border-border pointer-events-none">
-            Beta
-          </span> */}
-        </div>
-        <button
-          type="button"
-          onClick={onToggleSidebar}
-          title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-          className="flex items-center justify-center w-5 h-5 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
-        >
-          {sidebarOpen ? (
-            <PanelLeftClose className="w-3.5 h-3.5" />
-          ) : (
-            <PanelLeft className="w-3.5 h-3.5" />
-          )}
-        </button>
+        {!hideNav && (
+          <>
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+              className="flex items-center justify-center w-5 h-5 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors"
+            >
+              {sidebarOpen ? (
+                <PanelLeftClose className="w-3.5 h-3.5" />
+              ) : (
+                <PanelLeft className="w-3.5 h-3.5" />
+              )}
+            </button>
+            <div className="flex items-center gap-0.5 -ml-1">
+              <button
+                type="button"
+                onClick={onGoBack}
+                title="Back"
+                aria-label="Back"
+                disabled={!canGoBack}
+                className="flex items-center justify-center w-5 h-5 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={onGoForward}
+                title="Forward"
+                aria-label="Forward"
+                disabled={!canGoForward}
+                className="flex items-center justify-center w-5 h-5 rounded-md text-foreground-muted hover:bg-background-tertiary hover:text-foreground transition-colors disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </>
+        )}
       </div>
       {!isMac && (
         <div className="flex items-center h-full shrink-0">
