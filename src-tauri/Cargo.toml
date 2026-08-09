@@ -50,3 +50,9 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 [target.'cfg(windows)'.dependencies]
 tauri-plugin-decorum = "1"
 window-vibrancy = "0.8"
+
+# WebviewWindowBuilder::transparent (used for the desktop widget window) only
+# compiles on macOS with this feature enabled — Cargo unifies it into the
+# base `tauri` dependency above for macOS builds only.
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri = { version = "2.11.3", features = ["macos-private-api"] }
